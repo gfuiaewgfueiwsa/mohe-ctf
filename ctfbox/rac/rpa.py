@@ -87,7 +87,7 @@ def run_steps(base_url: str, steps: List[Dict], vars: Dict = None,
     vars = dict(vars or {})
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "CTFToolbox-RAC/2.4",
+        "User-Agent": "mohe-ctf-RAC/2.5",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     })
     base = (base_url or "").rstrip("/")

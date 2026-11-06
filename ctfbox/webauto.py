@@ -32,7 +32,7 @@ from .common import REPORTS_DIR, scan_flags_text
 
 MAX_BODY = 256 * 1024
 MIN_INTERVAL = 0.5
-UA = "CTFToolbox/2.4 (authorized CTF use only)"
+UA = "mohe-ctf/2.5 (authorized CTF use only)"
 BLOCK_STATUS = (401, 403, 406, 429, 503)
 
 

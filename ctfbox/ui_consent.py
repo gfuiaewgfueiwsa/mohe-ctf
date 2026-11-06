@@ -5,7 +5,7 @@ try:
 except Exception:      # 极端情况（customtkinter 缺失）下仍要能弹出确认窗
     class _FallbackTheme:
         APP_NAME = "CTFToolbox"
-        APP_VERSION = "v2.4"
+        APP_VERSION = "v2.5"
         BG_WINDOW = "#0d1117"
         BG_SURFACE = "#151b24"
         BG_SURFACE_2 = "#1a212c"

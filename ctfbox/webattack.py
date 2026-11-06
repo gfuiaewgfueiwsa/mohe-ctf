@@ -801,11 +801,16 @@ def test_login(ctx, fp):
                 loc = item.get("location") or ""
                 if loc and not re.search(r"(?i)login|signin|error|fail", loc):
                     ok = True
-            if re.search(r"(?i)(登录成功|登陆成功|login success|welcome back|dashboard|控制台|管理后台)", body):
+            if re.search(r"(?i)(登录成功|登陆成功|login success|welcome back|退出登录|logout|注销)", body):
                 ok = True
             if re.search(r"(?i)(用户名或密码错误|密码错误|登录失败|invalid credentials|wrong password)", body):
                 ok = False
-            if not ok and abs(len(body) - base_len) > 200 and status == 200 and \
+            # 登录页本身也常写“管理后台/dashboard”，不能拿静态词当成功标志；
+            # 只认 flag 出现、或明确的退出登录入口、或长度明显变化且无错误提示。
+            flag_hit = re.search(r"(?i)ctfhub\{|flag\{", body) and not re.search(r"(?i)ctfhub\{|flag\{", text_of(base_item))
+            if flag_hit:
+                ok = True
+            if not ok and abs(len(body) - base_len) > 120 and status == 200 and \
                     re.search(r"(?i)(logout|退出登录|注销)", body):
                 ok = True
             if ok:
@@ -1302,8 +1307,15 @@ def campaign(url, log=print, max_requests=DEFAULT_MAX_REQUESTS, max_seconds=DEFA
         # 先做便宜的直读与上传：上传矩阵最容易因为预算被注入矩阵吃掉而跑不完
         flag_hunt(ctx)
         result["uploads"] = test_upload(ctx, fp)
+        # 登录表单与参数无关：即使没有可测参数也要试一遍弱口令
+        try:
+            test_login(ctx, fp)
+        except AutoStop:
+            raise
+        except Exception as exc:
+            log("[deep] test_login 出错：%s" % exc)
         for target in targets:
-            for fn in (test_sqli, test_xss, test_lfi, test_ssti, test_cmdi, test_ssrf, test_login):
+            for fn in (test_sqli, test_xss, test_lfi, test_ssti, test_cmdi, test_ssrf):
                 try:
                     fn(ctx, target)
                 except AutoStop:

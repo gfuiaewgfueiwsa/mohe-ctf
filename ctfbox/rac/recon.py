@@ -138,7 +138,7 @@ def dir_scan(base: str, timeout: float = 6.0, words: List[str] = None,
     base = base.rstrip("/")
     hits = []
     session = requests.Session()
-    session.headers.update({"User-Agent": "CTFToolbox-RAC/2.4"})
+    session.headers.update({"User-Agent": "mohe-ctf-RAC/2.5"})
 
     def probe(w):
         url = base + w

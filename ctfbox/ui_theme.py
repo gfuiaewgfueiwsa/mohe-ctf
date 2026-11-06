@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CTFToolbox 统一视觉主题（v2.4 界面美化用）。
+"""魔盒-ctf 统一视觉主题。
 
 原先配色、字号、圆角散落在 ui_main / ui_web / ui_media / ui_rac / ui_scripts /
 ui_ssh / ui_consent 各页面里，同一语义（危险、成功、提示）在不同页面颜色不一致，
@@ -80,7 +80,7 @@ FONT_TITLE = 14
 FONT_H1 = 18
 
 APP_NAME = "魔盒-ctf"
-APP_VERSION = "v2.4"
+APP_VERSION = "v2.5"
 APP_SUBTITLE = "万能 CTF 集合工具箱 · 附件分析 / 编码解码 / 隐写取证 / Web · Pwn / 自动化"
 
 # ======================================================================
