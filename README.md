@@ -1,4 +1,4 @@
-﻿# CTFToolbox 万能 CTF 集合工具箱 v2.4
+﻿# 魔盒-ctf 万能 CTF 集合工具箱 v2.4
 
 面向 **CTF 比赛 / 合法安全实验 / 电子数据取证练习** 的 Windows 桌面工具箱。
 拖入任意后缀的文件，自动识别题目类型并把匹配的工具链全部跑一遍，递归分析压缩包、图片中嵌套的内容，直到找到 flag。
@@ -22,7 +22,7 @@
 - **脚本库**（`scripts/library/`）：按类别整理的参数化通用 exp/解题脚本，可直接调用，也是 RAC 流水线的自动装配素材库。
 - **动态容器利用**（v2.3）：ELF 保护位识别、后门定位、capstone 反汇编推断溢出偏移、ret2text/ret2libc 脚本生成、Web 多步重放，flag 一律运行时动态提取。
 - **工具中心**：统一管理和静默调用随包便携工具，避免弹窗刷屏。
-- **CLI 模式**：`CTFToolbox.exe --cli <文件> [文件...]` 批量分析；`CTFToolbox.exe --rac "题目描述" [附件...] --ctf-only` 一键自动解题，报告写入 `workspace/rac_cli_report.txt`。
+- **CLI 模式**：`魔盒-ctf.exe --cli <文件> [文件...]` 批量分析；`魔盒-ctf.exe --rac "题目描述" [附件...] --ctf-only` 一键自动解题，报告写入 `workspace/rac_cli_report.txt`。
 
 完整变更与用法见 [使用说明.md](使用说明.md)，已知缺口见 [不足与bug记录.md](不足与bug记录.md)。
 
@@ -30,7 +30,7 @@
 
 ```
 main.py                 启动入口（GUI / --cli / --rac）
-CTFToolbox.spec         PyInstaller 打包配置
+魔盒-ctf.spec         PyInstaller 打包配置
 build.bat               一键打包脚本
 version_info.txt        Windows 版本资源信息
 _mirror_webtools.py     内置 Web 工具导航数据生成
@@ -41,7 +41,7 @@ samples/                示例输入
 
 ## 依赖
 
-GUI 基于 `customtkinter`。打包依赖见 `CTFToolbox.spec` 中显式收集列表：
+GUI 基于 `customtkinter`。打包依赖见 `魔盒-ctf.spec` 中显式收集列表：
 `customtkinter`、`scapy`、`capstone`、`pyelftools`、`pefile`、`windnd`、`opencv-python`、`pillow`、`paramiko`、`pycryptodome`、`cryptography`、`numpy`、`qrcode`、`gmssl`、`registry`、`evtx`。
 运行环境为 Windows + Python 3.13。
 
@@ -49,7 +49,7 @@ GUI 基于 `customtkinter`。打包依赖见 `CTFToolbox.spec` 中显式收集�
 
 1. 安装上述依赖与 `pyinstaller`（`build.bat` 默认使用 `D:\PY\python.exe`，按需改为你的解释器路径）。
 2. 准备 `tools/portable` 与 `tools/runtime`（Ghidra、jadx、ffmpeg、JDK、Node、独立 Python 等）。
-3. 执行 `build.bat`，产物在 `dist/CTFToolbox/CTFToolbox.exe`，同时把 `_internal` 下的数据目录与 `使用说明.md`、`卸载CTFToolbox.bat` 一并整理到 exe 同级。
+3. 执行 `build.bat`，产物在 `dist/魔盒-ctf/魔盒-ctf.exe`，同时把 `_internal` 下的数据目录与 `使用说明.md`、`卸载魔盒-ctf.bat` 一并整理到 exe 同级。
 
 ## 未随仓库发布的内容
 

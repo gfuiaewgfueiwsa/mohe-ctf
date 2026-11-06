@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CTFToolbox 主界面。"""
+"""魔盒-ctf 主界面。"""
 import os
 import sys
 import queue
@@ -153,7 +153,7 @@ class App(ctk.CTk):
         self.status_label = ctk.CTkLabel(bar, text="就绪", font=theme.font(11),
                                          text_color=theme.TEXT_DIM, anchor="w")
         self.status_label.pack(side="left")
-        ctk.CTkLabel(bar, text="CTFToolbox · workspace / reports / exports",
+        ctk.CTkLabel(bar, text="魔盒-ctf · workspace / reports / exports",
                      font=theme.mono(10), text_color=theme.TEXT_MUTE).pack(side="right", padx=14)
 
     def _set_status(self, text, kind="info", short=None):
@@ -437,7 +437,7 @@ class App(ctk.CTk):
             with open(tp, "w", encoding="utf-8") as f:
                 f.write(f"{theme.APP_NAME} {theme.APP_VERSION} 分析报告\n" + "=" * 70 + "\n" + "\n".join(lines))
 
-            parts = ["<html><head><meta charset='utf-8'><title>CTFToolbox 报告</title>",
+            parts = ["<html><head><meta charset='utf-8'><title>魔盒-ctf 报告</title>",
                      f"<style>body{{font-family:'Microsoft YaHei UI',sans-serif;"
                      f"background:{theme.BG_WINDOW};color:{theme.TEXT};margin:24px;line-height:1.7}}"
                      f".flag{{color:{theme.TAGS['flag']};font-weight:bold}}"

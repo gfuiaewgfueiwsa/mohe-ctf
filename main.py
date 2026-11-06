@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""CTFToolbox 启动入口。
+"""魔盒-ctf 启动入口（原 CTFToolbox）。
 用法：
   双击/无参数          启动图形界面
-  CTFToolbox.exe --cli <文件> [文件...]   命令行批量分析（报告写入 workspace/cli_report.txt）
-  CTFToolbox.exe --rac "题目描述" [附件...]  RAC 自动化流水线（识别→匹配脚本→填参→执行→提取 flag）
-  CTFToolbox.exe --webauto <URL> --ctf-only   Web 自动化解题（只读、同源、限速的取证链）
-  CTFToolbox.exe --webattack <URL> --ctf-only Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
+  魔盒-ctf.exe --cli <文件> [文件...]   命令行批量分析（报告写入 workspace/cli_report.txt）
+  魔盒-ctf.exe --rac "题目描述" [附件...]  RAC 自动化流水线（识别→匹配脚本→填参→执行→提取 flag）
+  魔盒-ctf.exe --webauto <URL> --ctf-only   Web 自动化解题（只读、同源、限速的取证链）
+  魔盒-ctf.exe --webattack <URL> --ctf-only Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
 """
 import sys
 import os
@@ -105,7 +105,7 @@ def run_pwn(args):
 
     path = next((a for a in args if os.path.isfile(a)), "")
     if not path:
-        raise SystemExit("用法：CTFToolbox.exe --pwn <ELF> [--host H --port P] --ctf-only")
+        raise SystemExit("用法：魔盒-ctf.exe --pwn <ELF> [--host H --port P] --ctf-only")
     opts = {}
     for i, a in enumerate(args):
         if a.startswith("--") and i + 1 < len(args):
@@ -261,7 +261,7 @@ if __name__ == "__main__":
             raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
         target = next((a for a in sys.argv[2:] if a != "--ctf-only"), "")
         if not target:
-            raise SystemExit('用法：CTFToolbox.exe --webauto <URL> --ctf-only')
+            raise SystemExit('用法：魔盒-ctf.exe --webauto <URL> --ctf-only')
         if sys.platform.startswith("win"):
             try:
                 os.system("chcp 65001 >nul 2>nul")
@@ -302,7 +302,7 @@ if __name__ == "__main__":
             raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
         target = next((a for a in sys.argv[2:] if a != "--ctf-only"), "")
         if not target:
-            raise SystemExit('用法：CTFToolbox.exe --webattack <URL> --ctf-only')
+            raise SystemExit('用法：魔盒-ctf.exe --webattack <URL> --ctf-only')
         if sys.platform.startswith("win"):
             try:
                 os.system("chcp 65001 >nul 2>nul")
