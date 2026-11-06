@@ -98,6 +98,50 @@ def run_rac(args):
     return out
 
 
+def run_pwn(args):
+    """Pwn 自动化 CLI：--pwn <ELF> [--host H --port P --offset N --win 0xADDR] --ctf-only"""
+    from ctfbox import pwnrun
+    from ctfbox.common import Report, WORKSPACE
+
+    path = next((a for a in args if os.path.isfile(a)), "")
+    if not path:
+        raise SystemExit("用法：CTFToolbox.exe --pwn <ELF> [--host H --port P] --ctf-only")
+    opts = {}
+    for i, a in enumerate(args):
+        if a.startswith("--") and i + 1 < len(args):
+            opts[a[2:]] = args[i + 1]
+    host = opts.get("host", "")
+    port = opts.get("port", "")
+    offset = int(opts.get("offset", "0") or 0)
+    win = int(opts.get("win", "0") or 0, 0)
+
+    lines = []
+
+    def log(m):
+        try:
+            print(m)
+        except Exception:
+            pass
+        lines.append(str(m))
+
+    rep = Report(path)
+    info = pwnrun.analyze(path, rep, log)
+    lines.append(pwnrun.render_plan(info, path))
+    result = None
+    if host and port:
+        result = pwnrun.exploit(path, host, port, offset=offset, win_addr=win, report=rep, log=log)
+        lines.append("远端结果：%s" % (result.get("flags") or result.get("reason")))
+    else:
+        lines.append("未提供 --host/--port，只做了静态定位；要打通请补远端地址。")
+
+    out = os.path.join(WORKSPACE, "pwn_report.txt")
+    os.makedirs(WORKSPACE, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fp:
+        fp.write("\n".join(lines) + "\n\nFLAG: %s\n"
+                 % ("; ".join((result or {}).get("flags") or []) or "(无)"))
+    return out
+
+
 def run_webauto(url):
     """Web 自动化解题 CLI：--webauto <URL> --ctf-only"""
     from ctfbox import webauto
@@ -229,6 +273,25 @@ if __name__ == "__main__":
             except Exception:
                 pass
         report_path = run_webauto(target)
+        try:
+            if sys.stdout:
+                print("report written to:", report_path)
+        except Exception:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1] == "--pwn":
+        if "--ctf-only" not in sys.argv[2:]:
+            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
+        if sys.platform.startswith("win"):
+            try:
+                os.system("chcp 65001 >nul 2>nul")
+            except Exception:
+                pass
+        for _s in (sys.stdout, sys.stderr):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        report_path = run_pwn([a for a in sys.argv[2:] if a != "--ctf-only"])
         try:
             if sys.stdout:
                 print("report written to:", report_path)

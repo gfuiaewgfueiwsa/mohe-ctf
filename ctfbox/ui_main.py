@@ -1521,8 +1521,16 @@ class App(ctk.CTk):
         self.pwn_port = theme.entry(pr, width=84)
         self.pwn_port.insert(0, "9999")
         self.pwn_port.pack(side="left")
+        ctk.CTkLabel(pr, text="偏移", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(8, 4))
+        self.pwn_off = theme.entry(pr, width=72, placeholder_text="自动")
+        self.pwn_off.pack(side="left")
         theme.button(pr, "生成 pwntools exp 模板", "subtle", width=184,
                      command=self._w_exp).pack(side="left", padx=(10, 0))
+        theme.button(pr, "自动逆向分析", "primary", width=128,
+                     command=self._w_autorev).pack(side="left", padx=(8, 0))
+        theme.button(pr, "ret2win 一键打通", "primary", width=156,
+                     command=self._w_ret2win).pack(side="left", padx=(8, 0))
 
         out_card = theme.card(wrap)
         out_card.pack(fill="both", expand=True)
@@ -1565,6 +1573,45 @@ class App(ctk.CTk):
             except Exception as e:
                 rep.add("warn", "异常", str(e))
             self.q.put(("web_report", rep))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _w_autorev(self):
+        p = filedialog.askopenfilename(title="选择要自动逆向的二进制")
+        if not p:
+            return
+        def work():
+            from .dispatcher import Dispatcher
+            self._wlog("[*] 自动逆向：%s\n" % p)
+            try:
+                rep = Dispatcher(log_cb=self._wlog).run(os.path.abspath(p))
+                self.q.put(("web_report", rep))
+            except Exception as e:
+                self._wlog("[!] 自动逆向失败：%s\n" % e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _w_ret2win(self):
+        p = filedialog.askopenfilename(title="选择本地 ELF")
+        if not p:
+            return
+        host = self.pwn_host.get().strip()
+        try:
+            port = int(self.pwn_port.get())
+        except Exception:
+            self._wlog("[!] 端口无效\n")
+            return
+        try:
+            off = int(self.pwn_off.get().strip() or 0)
+        except Exception:
+            off = 0
+        def work():
+            from . import pwnrun
+            self._wlog("[*] ret2win：%s -> %s:%s 偏移=%s\n" % (p, host, port, off or "自动试"))
+            rep = Report(path=p)
+            res = pwnrun.exploit(p, host, port, offset=off, report=rep, log=self._wlog)
+            if res.get("ok"):
+                self._wlog("[+] 打通，偏移 %s，flag: %s\n" % (res.get("offset"), res.get("flags")))
+            else:
+                self._wlog("[-] 未打通：%s\n" % res.get("reason"))
         threading.Thread(target=work, daemon=True).start()
 
     def _w_exp(self):

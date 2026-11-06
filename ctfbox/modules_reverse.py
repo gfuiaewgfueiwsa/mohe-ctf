@@ -224,6 +224,39 @@ def analyze_elf(path, report: Report, outdir: str):
         if interesting:
             report.add("ok", "危险/关键符号", "\n".join(interesting[:50]))
 
+        # 关键函数地址（ret2win 直接用）
+        func_addrs = {}
+        for secname in (".symtab", ".dynsym"):
+            sec = elf.get_section_by_name(secname)
+            if not sec:
+                continue
+            for sym in sec.iter_symbols():
+                if sym.name and sym["st_value"] and \
+                        re.search(r"(?i)(flag|win|backdoor|getshell|shell|system)", sym.name):
+                    func_addrs[sym.name] = sym["st_value"]
+        if func_addrs:
+            report.add("ok", "可直接跳转的关键函数",
+                       "\n".join("%s = 0x%x" % (k, v) for k, v in list(func_addrs.items())[:10]))
+
+        # 简单 gadget（仅 x86/x64 的常见两字节序列）
+        text = elf.get_section_by_name(".text")
+        if text and is64 and "x86" in str(arch).lower():
+            _gadgets(text.data(), text["sh_addr"], b"\x5f\xc3", "pop rdi; ret", report)
+            _gadgets(text.data(), text["sh_addr"], b"\x5e\xc3", "pop rsi; ret", report)
+            _gadgets(text.data(), text["sh_addr"], b"\xc3", "ret", report, limit=3)
+
+        # 自动给出 ret2win 模板（偏移仍需用 cyclic 实测，这里不猜）
+        win = next((v for k, v in func_addrs.items() if re.search(r"(?i)(win|flag|backdoor|getshell)", k)), 0)
+        if win:
+            report.add("info", "Pwn 自动方案（ret2win 模板）",
+                       "win 函数地址 = 0x%x\n"
+                       "payload = b'A' * <偏移> + p64(0x%x)\n"
+                       "偏移获取：cyclic 200 发过去，崩溃后看 RSP/RIP 里的 4 字节标记；\n"
+                       "保护：%s"
+                       % (win, win, "见上方 Checksec"))
+        elif not canary and not pie:
+            report.add("info", "Pwn 自动方案（无 win 函数）",
+                       "无 Canary、无 PIE：优先 ret2shellcode；若 NX 开启则找 pop rdi; ret + /bin/sh + system PLT")
     with open(path, "rb") as f:
         raw = f.read()
     _disasm_ep(None, raw, report, machine=arch, is_elf=True, entry=entry, is64=is64)
@@ -262,6 +295,105 @@ def _disasm_ep(pe, raw, report, machine=None, is_elf=False, entry=None, is64=Tru
     except Exception as e:
         report.add("info", "反汇编预览跳过", str(e)[:200])
 
+def _ascii_strings(raw, min_len=5, limit=400000):
+    """从二进制里抠可打印字符串（等价 strings 的轻量实现，不依赖外部工具）。"""
+    out, cur = [], bytearray()
+    for b in raw[:limit * 20]:
+        if 32 <= b < 127:
+            cur.append(b)
+        else:
+            if len(cur) >= min_len:
+                out.append(cur.decode("ascii", "ignore"))
+                if len(out) >= limit:
+                    break
+            cur = bytearray()
+    if len(cur) >= min_len and len(out) < limit:
+        out.append(cur.decode("ascii", "ignore"))
+    return out
+
+
+def _gadgets(text_bytes, base, pat, name, report, limit=6):
+    """在 .text 里扫简单 gadget 字节串（如 pop rdi; ret = 5f c3）。"""
+    hits = []
+    start = 0
+    while len(hits) < limit:
+        i = text_bytes.find(pat, start)
+        if i < 0:
+            break
+        hits.append(base + i)
+        start = i + 1
+    if hits:
+        report.add("ok", "ROP gadget：%s" % name,
+                   ", ".join("0x%x" % a for a in hits))
+
+
+def auto_reverse(path, report: Report, outdir: str):
+    """全自动逆向兜底：字符串 → flag 正则 → 可疑函数 → radare2 复核。
+
+    目标不是替代 Ghidra，而是把"打开文件就能直接出 flag"的题自动做完；
+    出不来时给出下一步该看哪个函数/哪段字符串。
+    """
+    raw = open(path, "rb").read()
+    strings = _ascii_strings(raw)
+    flags = []
+    for s in strings:
+        for f in scan_flags(s.encode("utf-8", "ignore"), strong_only=True):
+            if f not in flags:
+                flags.append(f)
+    if flags:
+        for f in flags:
+            report.add("flag", "自动逆向命中 flag", f)
+        return
+
+    # 可疑函数名（已脱符号的题不会有，但命中就省一大圈）
+    interesting = [s for s in strings
+                   if re.search(r"(?i)^(flag|check|verify|win|backdoor|get_flag|secret)", s)][:10]
+    if interesting:
+        report.add("info", "可疑符号/字符串", "\n".join(interesting))
+
+    # radare2：有就做一次自动分析并摘取 flag 相关输出
+    try:
+        from .toolsmgr import get_tool
+        r2 = get_tool("radare2")
+    except Exception:
+        r2 = None
+    if r2:
+        try:
+            r = subprocess.run([r2, "-q", "-c", "aaa; iz~flag; afl~flag; afl~win; izz~ctf", path],
+                               capture_output=True, timeout=90)
+            txt = (r.stdout + r.stderr).decode("utf-8", "ignore")
+            hits = [ln for ln in txt.splitlines() if re.search(r"(?i)flag|win|ctf", ln)][:20]
+            if hits:
+                report.add("info", "radare2 自动分析线索", "\n".join(hits))
+                for ln in hits:
+                    for f in scan_flags(ln.encode("utf-8", "ignore"), strong_only=True):
+                        report.add("flag", "radare2 输出中的 flag", f)
+        except Exception as e:
+            report.add("info", "radare2 跳过", str(e)[:160])
+
+    # .pyc 直接反编译
+    if path.lower().endswith((".pyc", ".pyo")):
+        try:
+            import sys
+            r = subprocess.run([sys.executable, "-m", "uncompyle6", path],
+                               capture_output=True, timeout=120)
+            txt = (r.stdout + r.stderr).decode("utf-8", "ignore")
+            out = os.path.join(outdir, os.path.basename(path) + ".decompiled.py")
+            with open(out, "w", encoding="utf-8") as fp:
+                fp.write(txt)
+            report.add("ok", ".pyc 已自动反编译", out)
+            report.extracted.append(out)
+            for f in scan_flags(txt.encode("utf-8", "ignore"), strong_only=True):
+                report.add("flag", "反编译源码中的 flag", f)
+        except Exception as e:
+            report.add("info", "pyc 反编译跳过", str(e)[:160])
+
+    if not flags:
+        report.add("info", "自动逆向未直接命中",
+                   "已抽取 %d 条字符串并尝试 radare2；下一步用 Ghidra 打开，优先看 main / 含 flag 字样的函数"
+                   % len(strings))
+
+
 def analyze(path, report: Report, ftype: str, outdir: str):
     with open(path, "rb") as f:
         head = f.read(4)
@@ -271,3 +403,7 @@ def analyze(path, report: Report, ftype: str, outdir: str):
         analyze_elf(path, report, outdir)
     else:
         report.add("info", "二进制分析", "非 PE/ELF，输出熵与字符串")
+    try:
+        auto_reverse(path, report, outdir)
+    except Exception as e:
+        report.add("info", "自动逆向异常", str(e)[:160])
