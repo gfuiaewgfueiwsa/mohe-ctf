@@ -469,6 +469,9 @@ footer p{margin:0;max-width:none}
       <tr><td>SSRF·伪协议读取</td><td>challenge-f1706333…</td><td>盲探 url，file:///var/www/html/flag.php 取 flag</td><td>113 / 79s</td></tr>
       <tr><td>SQL·报错注入</td><td>challenge-e23ef037…</td><td>updatexml + substr 分片拼出完整 flag</td><td>55 / 27s</td></tr>
       <tr><td>密码口令·弱口令</td><td>challenge-910b91ac…</td><td>识别 name/password 表单，8 组弱口令命中 admin/123456 并取 flag</td><td>292 / 146s</td></tr>
+      <tr><td>SQL·布尔盲注</td><td>challenge-c232ae76…</td><td>query_success/query_error 标记 + ascii(substr()) 二分恢复 flag</td><td>278 / 139s</td></tr>
+      <tr><td>RCE·过滤 cat</td><td>challenge-9105a443…</td><td>目录列表锁定 flag_*.php，base64 回读解出 flag</td><td>77 / 62s</td></tr>
+      <tr><td>XSS·反射型</td><td>challenge-a52365ec…</td><td>Playwright 真开页面，捕获 alert 弹窗确证</td><td>113 / 59s</td></tr>
       <tr><td>RCE·命令注入</td><td>challenge-9b32e90d…</td><td>算术回显判 cmdi，再目录列表 + base64 读源码取 flag</td><td>88 / 73s</td></tr>
     </tbody>
   </table>

