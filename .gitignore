@@ -1,23 +1,9 @@
-# 本地构建产物与便携工具链（体积远超 GitHub 限制，不入库）
-CTFToolbox_v2.3/
-*.zip
-!CTFToolbox_v2.3_源码.zip
-
-# 题解与实战数据：含真实 flag、靶场地址与凭据，仅在本地保留
-Polar 靶场题解.md
-exports/
-reports/
-workspace/
-
-# Python
-__pycache__/
-*.py[cod]
-build/
+# 便携工具与构建产物不进仓库（体积过大，随成品目录分发）
+tools/
 dist/
-*.egg-info/
-
-# 系统与编辑器
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+build/
+workspace/
+reports/
+samples/exports/
+__pycache__/
+*.pyc

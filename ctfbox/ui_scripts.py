@@ -12,6 +12,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from .common import APP_DIR, IS_FROZEN, CREATE_NEW_CONSOLE, external_python
+from . import ui_theme as theme
 
 CATEGORY_LABELS = [
     ("all", "全部方向"),
@@ -127,6 +128,7 @@ def parse_meta(path):
 
 class ScriptsLibraryFrame(ctk.CTkFrame):
     def __init__(self, master, **kw):
+        kw.setdefault("fg_color", "transparent")
         super().__init__(master, **kw)
         self.root_dir = library_root()
         self.items = []          # [(cat, path, meta)]
@@ -136,62 +138,65 @@ class ScriptsLibraryFrame(ctk.CTkFrame):
 
     # ------------------------------------------------------------------
     def _build(self):
-        top = ctk.CTkFrame(self)
-        top.pack(fill="x", padx=6, pady=(6, 4))
+        top = theme.toolbar(self)
+        top.pack(fill="x", padx=8, pady=(10, 6))
 
-        ctk.CTkLabel(top, text="脚本库", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=(8, 8))
+        ctk.CTkLabel(top, text="脚本库", font=theme.font(16, "bold"),
+                     text_color=theme.TEXT).pack(side="left", padx=(12, 10), pady=8)
         self.cat_var = ctk.StringVar(value=LABEL_BY_CAT["all"])
-        self.cat_menu = ctk.CTkOptionMenu(
-            top, width=150, values=[lbl for _, lbl in CATEGORY_LABELS],
+        self.cat_menu = theme.option_menu(
+            top, values=[lbl for _, lbl in CATEGORY_LABELS], width=152,
             command=self._on_filter)
-        self.cat_menu.pack(side="left", padx=4)
+        self.cat_menu.pack(side="left", padx=(0, 8), pady=8)
 
-        self.search = ctk.CTkEntry(top, placeholder_text="搜索脚本名/简介/内容关键字…", width=280)
-        self.search.pack(side="left", fill="x", expand=True, padx=6)
+        self.search = theme.entry(top, placeholder_text="搜索脚本名 / 简介 / 内容关键字…", width=280)
+        self.search.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.search.bind("<KeyRelease>", lambda e: self._on_filter())
 
-        ctk.CTkButton(top, text="刷新", width=64, command=self.scan).pack(side="left", padx=3)
-        ctk.CTkButton(top, text="打开库目录", width=96,
-                      fg_color="#444", hover_color="#555",
-                      command=self._open_root).pack(side="left", padx=3)
+        theme.button(top, "刷新", "ghost", width=66, command=self.scan).pack(side="left", padx=(0, 6))
+        theme.button(top, "打开库目录", "ghost", width=100,
+                     command=self._open_root).pack(side="right", padx=(0, 10))
 
         # 主体：左列表 + 右内容
-        body = ctk.CTkFrame(self)
-        body.pack(fill="both", expand=True, padx=6, pady=4)
+        body = theme.panel(self)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 10))
 
-        left = ctk.CTkFrame(body, width=380)
-        left.pack(side="left", fill="y", padx=(6, 3), pady=6)
+        left = theme.card(body, width=380)
+        left.pack(side="left", fill="y", padx=(0, 8))
         left.pack_propagate(False)
-        self.count_label = ctk.CTkLabel(left, text="", anchor="w", font=ctk.CTkFont(size=12))
-        self.count_label.pack(fill="x", padx=10, pady=(8, 2))
-        self.list_scroll = ctk.CTkScrollableFrame(left, width=350)
-        self.list_scroll.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.count_label = ctk.CTkLabel(left, text="", anchor="w",
+                                        font=theme.font(theme.FONT_SMALL),
+                                        text_color=theme.TEXT_MUTE)
+        self.count_label.pack(fill="x", padx=12, pady=(10, 4))
+        self.list_scroll = theme.scroll(left, width=350)
+        self.list_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        right = ctk.CTkFrame(body)
-        right.pack(side="left", fill="both", expand=True, padx=(3, 6), pady=6)
+        right = theme.card(body)
+        right.pack(side="left", fill="both", expand=True, padx=8)
 
-        rbar = ctk.CTkFrame(right)
-        rbar.pack(fill="x", padx=6, pady=(6, 2))
+        rbar = theme.panel(right)
+        rbar.pack(fill="x", padx=12, pady=(10, 4))
         self.title_label = ctk.CTkLabel(rbar, text="请选择左侧脚本",
-                                        font=ctk.CTkFont(size=15, weight="bold"),
-                                        anchor="w")
-        self.title_label.pack(side="left", fill="x", expand=True, padx=6)
-        ctk.CTkButton(rbar, text="复制全部", width=80, command=self._copy_all).pack(side="right", padx=3)
-        ctk.CTkButton(rbar, text="另存为…", width=80, fg_color="#1d6fa5", hover_color="#15547d",
-                      command=self._save_as).pack(side="right", padx=3)
-        ctk.CTkButton(rbar, text="打开所在目录", width=100, fg_color="#444", hover_color="#555",
-                      command=self._open_current_dir).pack(side="right", padx=3)
-        self.selftest_btn = ctk.CTkButton(rbar, text="运行自测", width=90,
-                                          fg_color="#38631f", hover_color="#2b4d18",
-                                          command=self._run_selftest)
-        self.selftest_btn.pack(side="right", padx=3)
+                                        font=theme.font(15, "bold"),
+                                        text_color=theme.TEXT, anchor="w")
+        self.title_label.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        theme.button(rbar, "复制全部", "ghost", width=82, height=28,
+                     command=self._copy_all).pack(side="right", padx=(6, 0))
+        theme.button(rbar, "另存为…", "primary", width=82, height=28,
+                     command=self._save_as).pack(side="right", padx=(6, 0))
+        theme.button(rbar, "打开所在目录", "ghost", width=104, height=28,
+                     command=self._open_current_dir).pack(side="right", padx=(6, 0))
+        self.selftest_btn = theme.button(rbar, "运行自测", "ghost", width=92, height=28,
+                                         command=self._run_selftest)
+        self.selftest_btn.pack(side="right")
 
         self.meta_label = ctk.CTkLabel(right, text="", anchor="w", justify="left",
-                                       text_color="#9fb4c8", font=ctk.CTkFont(size=12))
-        self.meta_label.pack(fill="x", padx=10)
+                                       text_color=theme.TEXT_MUTE,
+                                       font=theme.font(theme.FONT_SMALL))
+        self.meta_label.pack(fill="x", padx=14, pady=(2, 0))
 
-        self.code_box = ctk.CTkTextbox(right, font=ctk.CTkFont(family="Consolas", size=12))
-        self.code_box.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+        self.code_box = theme.textbox(right, mono_font=True, size=12)
+        self.code_box.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         self.code_box.configure(state="disabled")
 
     # ------------------------------------------------------------------
@@ -242,18 +247,36 @@ class ScriptsLibraryFrame(ctk.CTkFrame):
             return False
 
     def _make_list_row(self, cat, path, meta):
-        btn = ctk.CTkButton(
-            self.list_scroll, anchor="w", height=46,
-            fg_color="transparent", hover_color="#2a3340",
-            text_color=("gray10", "#d8dee6"),
-            command=lambda: self.show(path),
-        )
+        """两行式列表行：名字加粗、简介自动换行，整行可点击/整行悬停高亮。"""
         title = meta["name"]
         intro = meta["intro"] or LABEL_BY_CAT.get(cat, cat)
-        if len(intro) > 46:
-            intro = intro[:46] + "…"
-        btn.configure(text=f"{title}\n   {intro}")
-        btn.pack(fill="x", pady=1)
+        if len(intro) > 52:
+            intro = intro[:52] + "…"
+        row = ctk.CTkFrame(self.list_scroll, fg_color="transparent",
+                           corner_radius=theme.RADIUS_SMALL)
+        row.pack(fill="x", pady=1, padx=2)
+        name_label = ctk.CTkLabel(row, text=title, anchor="w", justify="left",
+                                  font=theme.font(theme.FONT_BODY, "bold"),
+                                  text_color=theme.TEXT, wraplength=306)
+        name_label.pack(fill="x", padx=9, pady=(5, 0))
+        intro_label = ctk.CTkLabel(row, text=intro, anchor="w", justify="left",
+                                   font=theme.font(theme.FONT_SMALL),
+                                   text_color=theme.TEXT_DIM, wraplength=306)
+        intro_label.pack(fill="x", padx=9, pady=(0, 5))
+
+        def enter(_event):
+            row.configure(fg_color=theme.BG_SURFACE_3)
+
+        def leave(_event):
+            row.configure(fg_color="transparent")
+
+        def open_it(_event):
+            self.show(path)
+
+        for widget in (row, name_label, intro_label):
+            widget.bind("<Button-1>", open_it)
+            widget.bind("<Enter>", enter)
+        row.bind("<Leave>", leave)
 
     # ------------------------------------------------------------------
     def show(self, path):

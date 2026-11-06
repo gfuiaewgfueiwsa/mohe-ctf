@@ -6,6 +6,8 @@ import threading
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
+from . import ui_theme as theme
+
 try:
     import paramiko
 except Exception:
@@ -14,6 +16,7 @@ except Exception:
 
 class SSHTab(ctk.CTkFrame):
     def __init__(self, master, **kw):
+        kw.setdefault("fg_color", "transparent")
         super().__init__(master, **kw)
         self.client = None
         self.shell = None
@@ -23,53 +26,60 @@ class SSHTab(ctk.CTkFrame):
         self.after(80, self._drain)
 
     def _build(self):
-        bar = ctk.CTkFrame(self)
-        bar.pack(fill="x", padx=8, pady=(8, 4))
-        ctk.CTkLabel(bar, text="主机").pack(side="left", padx=(6, 2))
-        self.host = ctk.CTkEntry(bar, width=150, placeholder_text="192.168.1.1")
-        self.host.pack(side="left")
+        bar = theme.toolbar(self)
+        bar.pack(fill="x", padx=8, pady=(10, 6))
+        ctk.CTkLabel(bar, text="主机", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(12, 4))
+        self.host = theme.entry(bar, width=152, placeholder_text="192.168.1.1")
+        self.host.pack(side="left", pady=8)
         self.host.insert(0, "192.168.1.1")
-        ctk.CTkLabel(bar, text="端口").pack(side="left", padx=(6, 2))
-        self.port = ctk.CTkEntry(bar, width=60)
+        ctk.CTkLabel(bar, text="端口", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(10, 4))
+        self.port = theme.entry(bar, width=64)
         self.port.pack(side="left")
         self.port.insert(0, "22")
-        ctk.CTkLabel(bar, text="用户").pack(side="left", padx=(6, 2))
-        self.user = ctk.CTkEntry(bar, width=100, placeholder_text="root")
+        ctk.CTkLabel(bar, text="用户", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(10, 4))
+        self.user = theme.entry(bar, width=104, placeholder_text="root")
         self.user.pack(side="left")
         self.user.insert(0, "root")
-        ctk.CTkLabel(bar, text="密码").pack(side="left", padx=(6, 2))
-        self.pwd = ctk.CTkEntry(bar, width=130, show="*")
+        ctk.CTkLabel(bar, text="密码", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(10, 4))
+        self.pwd = theme.entry(bar, width=132, show="*")
         self.pwd.pack(side="left")
-        self.key_btn = ctk.CTkButton(bar, text="选择私钥(可选)", width=120, command=self._pick_key)
-        self.key_btn.pack(side="left", padx=6)
-        self.connect_btn = ctk.CTkButton(bar, text="连接", width=80, command=self._connect)
-        self.connect_btn.pack(side="left", padx=4)
-        self.disconnect_btn = ctk.CTkButton(bar, text="断开", width=80, state="disabled",
-                                            command=self._disconnect)
-        self.disconnect_btn.pack(side="left")
+        self.key_btn = theme.button(bar, "选择私钥（可选）", "ghost", width=124,
+                                    command=self._pick_key)
+        self.key_btn.pack(side="left", padx=(10, 0))
+        self.disconnect_btn = theme.button(bar, "断开", "subtle", width=80,
+                                           state="disabled", command=self._disconnect)
+        self.disconnect_btn.pack(side="right", padx=(0, 10), pady=8)
+        self.connect_btn = theme.button(bar, "连接", "primary", width=84, command=self._connect)
+        self.connect_btn.pack(side="right", padx=(0, 6), pady=8)
         self.key_path = None
 
-        bar2 = ctk.CTkFrame(self)
-        bar2.pack(fill="x", padx=8, pady=2)
-        ctk.CTkButton(bar2, text="SFTP 上传文件…", width=130, command=self._sftp_up).pack(side="left", padx=4)
-        ctk.CTkButton(bar2, text="SFTP 下载远程文件…", width=150, command=self._sftp_down).pack(side="left", padx=4)
-        ctk.CTkButton(bar2, text="用 MobaXterm 打开(Xshell平替)", width=210,
-                      fg_color="#2f6df6", command=self._open_mobaxterm).pack(side="left", padx=4)
-        self.remote_path = ctk.CTkEntry(bar2, width=260, placeholder_text="远程路径(下载用) 如 /home/root/flag.txt")
+        bar2 = theme.toolbar(self)
+        bar2.pack(fill="x", padx=8, pady=(0, 6))
+        theme.button(bar2, "SFTP 上传文件…", "subtle", width=134,
+                     command=self._sftp_up).pack(side="left", padx=(10, 0), pady=6)
+        theme.button(bar2, "SFTP 下载远程文件…", "subtle", width=156,
+                     command=self._sftp_down).pack(side="left", padx=6, pady=6)
+        theme.button(bar2, "用 MobaXterm 打开（Xshell 平替）", "primary", width=224,
+                     command=self._open_mobaxterm).pack(side="left", padx=6, pady=6)
+        self.remote_path = theme.entry(bar2, width=260, placeholder_text="远程路径（下载用）如 /home/root/flag.txt")
         self.remote_path.pack(side="left", padx=6)
-        self.status = ctk.CTkLabel(bar2, text="未连接", text_color="#e8a33d")
-        self.status.pack(side="right", padx=10)
+        self.status = ctk.CTkLabel(bar2, text="未连接", text_color=theme.WARNING,
+                                   font=theme.font(theme.FONT_SMALL, "bold"))
+        self.status.pack(side="right", padx=12)
 
-        self.screen = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Consolas", size=13),
-                                     text_color="#d4d4d4", fg_color="#1e1e1e")
-        self.screen.pack(fill="both", expand=True, padx=8, pady=4)
+        self.screen = theme.textbox(self, mono_font=True, size=13)
+        self.screen.pack(fill="both", expand=True, padx=8, pady=(0, 6))
         self.screen.configure(state="disabled")
 
-        sendbar = ctk.CTkFrame(self)
-        sendbar.pack(fill="x", padx=8, pady=(0, 8))
-        self.cmd = ctk.CTkEntry(sendbar, placeholder_text="输入命令后回车（连接状态下直接键入也可）",
-                                font=ctk.CTkFont(family="Consolas", size=13))
-        self.cmd.pack(side="left", fill="x", expand=True, padx=(4, 6), pady=4)
+        sendbar = theme.toolbar(self)
+        sendbar.pack(fill="x", padx=8, pady=(0, 10))
+        theme.hint(sendbar, "命令", side="left", padx=(12, 6), pady=7)
+        self.cmd = theme.entry(sendbar, placeholder_text="输入命令后回车（连接状态下直接键入也可）")
+        self.cmd.pack(side="left", fill="x", expand=True, padx=(0, 10), pady=6)
         self.cmd.bind("<Return>", lambda e: self._send_line())
         self.screen.bind("<Key>", self._type_key)
 
@@ -171,7 +181,7 @@ class SSHTab(ctk.CTkFrame):
                     self._write_screen(val)
                 elif kind == "status":
                     self.status.configure(text=val,
-                                          text_color="#3ecf8e" if val == "已连接" else "#e8a33d")
+                                          text_color=theme.SUCCESS if val == "已连接" else theme.WARNING)
                     self.connect_btn.configure(state="normal" if val != "已连接" else "disabled")
                     self.disconnect_btn.configure(state="normal" if val == "已连接" else "disabled")
         except queue.Empty:
@@ -239,4 +249,4 @@ class SSHTab(ctk.CTkFrame):
         except Exception:
             pass
         self.shell, self.client, self.sftp = None, None, None
-        self.status.configure(text="未连接", text_color="#e8a33d")
+        self.status.configure(text="未连接", text_color=theme.WARNING)

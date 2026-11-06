@@ -8,7 +8,7 @@ SPECPATH = os.path.abspath(os.getcwd())
 datas = []
 binaries = []
 hiddenimports = []
-for pkg in ("customtkinter", "scapy", "capstone", "pyelftools", "pefile",
+for pkg in ("customtkinter", "scapy", "capstone", "elftools", "pefile",
             "windnd", "cv2", "PIL", "paramiko", "Crypto", "Cryptodome",
             "cryptography", "numpy", "qrcode", "gmssl", "Registry", "Evtx"):
     try:

@@ -78,60 +78,77 @@ def http_probe(url: str, log=print):
         log(f"[!] 探测失败: {e}")
         return None
 
-def port_scan(host: str, ports=None, log=print, workers=200, timeout=2.0):
+def port_scan(host: str, ports=None, log=print, workers=8, timeout=2.0, cancel_event=None):
+    import time
+    from .process_runner import run_command, TaskCancelled, TaskTimeout
+    cancel = cancel_event or threading.Event()
+    target_ports = _parse_ports(ports) if ports else TOP_PORTS
+    if not host or host.startswith("-") or any(char.isspace() for char in host):
+        raise ValueError("无效的单目标主机名")
+    if cancel.is_set():
+        raise TaskCancelled()
     nmap = toolsmgr.get_tool("nmap")
     if nmap:
-        log("[*] 调用 nmap 进行扫描（-sV 版本识别）…")
-        cmd = [nmap, "-Pn", "-sV", "--min-rate", "2000", "-T4", host]
-        if ports:
-            cmd += ["-p", ports]
-        else:
-            cmd += ["--top-ports", "1000"]
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, encoding="utf-8", errors="replace", bufsize=1)
-        for line in p.stdout:
-            log(line.rstrip())
-        p.wait()
+        log("[*] 调用 nmap 进行单目标限速扫描，可使用停止检测取消。")
+        cmd = [nmap, "-Pn", "-sT", "-sV", "--version-light", "--max-rate", "20", "--max-retries", "1", "-p",
+               ",".join(str(port) for port in target_ports), host]
+        result = run_command(cmd, log=log, cancel_event=cancel, timeout=180)
+        if result.returncode:
+            raise RuntimeError(f"nmap 退出码 {result.returncode}")
         return
-    log("[*] 未检测到 nmap，使用内置 socket 扫描器（常见端口）")
-    target_ports = ports and _parse_ports(ports) or TOP_PORTS
+    log("[*] 未检测到 nmap，使用内置低并发 socket 扫描器")
+    deadline = time.monotonic() + 180
+    addresses = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    family, socktype, proto, _, address = addresses[0]
     open_ports = []
-    done = [0]
 
     def one(port):
+        if cancel.is_set():
+            return None
+        endpoint = (address[0], port, *address[2:])
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(timeout)
-                if s.connect_ex((host, port)) == 0:
+            with socket.socket(family, socktype, proto) as connection:
+                connection.settimeout(timeout)
+                if connection.connect_ex(endpoint) == 0:
                     return port
-        except Exception:
+        except OSError:
             return None
         return None
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(one, p): p for p in target_ports}
-        for fut in as_completed(futs):
-            done[0] += 1
-            p = fut.result()
-            if p:
-                open_ports.append(p)
-                log(f"[+] {host}:{p:<6} OPEN  {PORT_SERVICE.get(p, '')}")
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(one, port) for port in target_ports]
+        for future in as_completed(futures):
+            if cancel.is_set() or time.monotonic() >= deadline:
+                for pending in futures:
+                    pending.cancel()
+                if cancel.is_set():
+                    raise TaskCancelled()
+                raise TaskTimeout()
+            port = future.result()
+            if port:
+                open_ports.append(port)
+                log(f"[+] {host}:{port:<6} OPEN  {PORT_SERVICE.get(port, '')}")
     log(f"[*] 扫描完成，开放端口: {sorted(open_ports)}")
 
-def _parse_ports(s):
-    out = []
-    if isinstance(s, (list, tuple)):
-        for x in s:
-            out.extend(_parse_ports(str(x)))
-        return out
-    for part in s.split(","):
+def _parse_ports(value):
+    text = ",".join(map(str, value)) if isinstance(value, (list, tuple)) else str(value)
+    ports = set()
+    for part in text.split(","):
         part = part.strip()
-        if "-" in part:
-            a, b = part.split("-", 1)
-            out.extend(range(int(a), int(b) + 1))
-        elif part:
-            out.append(int(part))
-    return out
+        if not part:
+            raise ValueError("端口不能为空")
+        ends = part.split("-")
+        if len(ends) > 2 or any(not item.isdecimal() for item in ends):
+            raise ValueError("端口格式示例：80,443,8000-8100")
+        first, last = int(ends[0]), int(ends[-1])
+        if not 1 <= first <= last <= 65535:
+            raise ValueError("端口必须位于 1–65535，范围起点不得大于终点")
+        if last - first >= 1024:
+            raise ValueError("单次最多探测 1024 个端口")
+        ports.update(range(first, last + 1))
+        if len(ports) > 1024:
+            raise ValueError("单次最多探测 1024 个端口")
+    return sorted(ports)
 
 def dir_scan(url: str, log=print, workers=20, extra_words=None):
     if requests is None:

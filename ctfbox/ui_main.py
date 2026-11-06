@@ -5,12 +5,14 @@ import sys
 import queue
 import threading
 import subprocess
+import time
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from .common import (WORKSPACE, TOOLS_DIR, REPORTS_DIR, EXPORTS_DIR, Report,
                      human_size, safe_name, external_python)
-from .dispatcher import Dispatcher
+from .analysis_worker import run_analysis
+from .process_runner import TaskCancelled, TaskTimeout
 from . import toolsmgr
 from . import webtools
 from . import modules_text
@@ -18,51 +20,64 @@ from . import modules_archive
 from .modules_text import auto_decode, hash_text, identify_hash, crack_hash
 from .ui_ssh import SSHTab
 from .ui_scripts import ScriptsLibraryFrame
+from .ui_rac import RACTab
 
-try:
-    import windnd
-except Exception:
-    windnd = None
+from .ui_consent import USAGE_TEXT
+from . import ui_theme as theme
 
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("dark-blue")
+theme.init()
 
-LEVEL_COLORS = {
-    "flag": "#ff4d4f",
-    "ok": "#3ecf8e",
-    "warn": "#faad14",
-    "info": "#b8c0cc",
-    "tool": "#69b1ff",
-}
+LEVEL_COLORS = dict(theme.TAGS)
 
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("CTFToolbox 万能CTF集合工具箱 v2.3  | 仅限CTF/授权测试")
-        self.geometry("1320x880")
-        self.minsize(1100, 720)
+        theme.init(self)
+        self.title(f"{theme.APP_NAME} {theme.APP_VERSION} · 万能 CTF 集合工具箱 | 仅限 CTF 比赛")
+        # 自适应窗口：小屏 / 高 DPI 下不把按钮和状态栏挤出屏幕外
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        win_w = max(1080, min(1360, screen_w - 40))
+        win_h = max(660, min(900, screen_h - 90))
+        self.geometry(f"{win_w}x{win_h}+{max(0, (screen_w - win_w) // 2)}"
+                      f"+{max(0, (screen_h - win_h) // 2 - 24)}")
+        self.minsize(min(1120, win_w), min(740, win_h))
         self.q = queue.Queue()
+        self._dropped_logs = 0
         self.last_report = None
         self.current_file = None
         self.wordlist = None
         self._file_queue = []    # 批量分析待处理文件
         self._busy = False
-        self._run_token = 0     # 每次分析递增；停止后旧任务结果被丢弃
+        self._run_token = 0
+        self._analysis_cancel = None
+        self._analysis_thread = None
+        self._closing = False
+        self._drop_target = None
+        self._center_detecting = False
+        self._render_pending = False
+        self._analysis_done = False
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self.tabs = ctk.CTkTabview(self, command=self._on_tab)
-        self.tabs.pack(fill="both", expand=True, padx=8, pady=8)
+        self._build_header()
+        theme.divider(self, pady=(0, 0))
+        self._build_statusbar()
+
+        self.tabs = theme.tabview(self, command=self._on_tab)
+        self.tabs.pack(fill="both", expand=True, padx=14, pady=(8, 6))
         self.t_ana = self.tabs.add("一键分析")
         self.t_code = self.tabs.add("编码/密码")
         self.t_cipher = self.tabs.add("密文加解密")
         self.t_util = self.tabs.add("实用小工具")
         self.t_tool = self.tabs.add("专项工具")
+        self.t_rac = self.tabs.add("RAC 自动化")
         self.t_web = self.tabs.add("Web / Pwn")
         self.t_lib = self.tabs.add("📚 脚本库")
         self.t_ssh = self.tabs.add("SSH 终端")
         self.t_center = self.tabs.add("工具中心")
         self.t_media = self.tabs.add("媒体中心")
         self.t_nav = self.tabs.add("网页导航")
+        self.t_help = self.tabs.add("使用说明")
 
         self._build_analysis()
         self._build_code()
@@ -75,78 +90,165 @@ class App(ctk.CTk):
         self.ssh = SSHTab(self.t_ssh)
         self.ssh.pack(fill="both", expand=True)
         self._build_center()
-        self._build_media()
-        self._build_webnav()
+        self._lazy_tabs = {"媒体中心": self._build_media, "网页导航": self._build_webnav,
+                           "RAC 自动化": self._build_rac}
 
-        if windnd:
-            windnd.hook_dropfiles(self, func=self._on_drop)
-        self.after(100, self._drain)
-        self._center_log("提示：把题目文件直接拖入窗口，或点「选择文件」→「开始分析」\n")
+        help_wrap = theme.card(self.t_help)
+        help_wrap.pack(fill="both", expand=True, padx=8, pady=8)
+        theme.section(help_wrap, "使用说明", "仅限 CTF 比赛授权题目", padx=14, pady=(12, 8))
+        help_box = theme.textbox(help_wrap, size=13, wrap="word")
+        help_box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        help_box.insert("1.0", USAGE_TEXT)
+        help_box.configure(state="disabled")
+
+        if sys.platform == "win32":
+            from .win_drop import DropTarget
+            try:
+                self._drop_target = DropTarget(self, lambda paths: self.q.put(("drop", paths)),
+                                               on_error=lambda error: self.q.put(("drop_error", str(error))))
+            except Exception as error:
+                self.q.put(("drop_error", str(error)))
+        self.after(50, self._drain)
+        self._center_log("提示：拖入题目文件即可分析；使用前请阅读「使用说明」。\n")
+        self._set_status("就绪 · 拖入题目文件即可开始分析", "ok", "● 就绪")
+
+    # ===================================================================
+    # 顶栏 / 状态栏
+    # ===================================================================
+    def _build_header(self):
+        header = theme.panel(self)
+        header.pack(fill="x", padx=14, pady=(12, 10))
+
+        brand = theme.panel(header)
+        brand.pack(side="left")
+        ctk.CTkLabel(brand, text="CTF", width=52, height=36, corner_radius=10,
+                     fg_color=theme.ACCENT, text_color="#ffffff",
+                     font=theme.font(15, "bold")).pack(side="left", padx=(0, 12))
+        text_wrap = theme.panel(brand)
+        text_wrap.pack(side="left")
+        title_row = theme.panel(text_wrap)
+        title_row.pack(anchor="w")
+        ctk.CTkLabel(title_row, text=theme.APP_NAME, font=theme.font(19, "bold"),
+                     text_color=theme.TEXT, anchor="w").pack(side="left")
+        ctk.CTkLabel(title_row, text=theme.APP_VERSION, font=theme.font(11),
+                     text_color=theme.INFO, fg_color=theme.ACCENT_SOFT, corner_radius=8,
+                     padx=7, height=19).pack(side="left", padx=(7, 0))
+        ctk.CTkLabel(text_wrap, text=theme.APP_SUBTITLE, font=theme.font(11),
+                     text_color=theme.TEXT_MUTE, anchor="w").pack(anchor="w", pady=(2, 0))
+
+        right = theme.panel(header)
+        right.pack(side="right")
+        self.header_state = theme.chip(right, "● 就绪", "info")
+        self.header_state.pack(side="right", padx=(8, 0))
+        theme.chip(right, "仅限 CTF 授权赛事", "warn").pack(side="right", padx=(8, 0))
+        theme.chip(right, "本地运行 · 结果不外传", "ok").pack(side="right")
+
+    def _build_statusbar(self):
+        bar = ctk.CTkFrame(self, fg_color=theme.BG_SURFACE, corner_radius=0, height=28)
+        bar.pack(fill="x", side="bottom")
+        bar.pack_propagate(False)
+        self.status_dot = ctk.CTkLabel(bar, text="●", font=theme.font(11),
+                                       text_color=theme.SUCCESS, width=12)
+        self.status_dot.pack(side="left", padx=(14, 2))
+        self.status_label = ctk.CTkLabel(bar, text="就绪", font=theme.font(11),
+                                         text_color=theme.TEXT_DIM, anchor="w")
+        self.status_label.pack(side="left")
+        ctk.CTkLabel(bar, text="CTFToolbox · workspace / reports / exports",
+                     font=theme.mono(10), text_color=theme.TEXT_MUTE).pack(side="right", padx=14)
+
+    def _set_status(self, text, kind="info", short=None):
+        """底部状态栏 + 顶栏状态胶囊同步，避免两处提示不一致。"""
+        colors = {"ok": theme.SUCCESS, "warn": theme.WARNING,
+                  "danger": theme.DANGER, "info": theme.INFO}
+        color = colors.get(kind, theme.INFO)
+        try:
+            self.status_label.configure(text=text, text_color=theme.TEXT_DIM)
+            self.status_dot.configure(text_color=color)
+            if short:
+                self.header_state.configure(text=short, text_color=color)
+        except Exception:
+            pass
 
     # ===================================================================
     # 一键分析页
     # ===================================================================
     def _build_analysis(self):
-        top = ctk.CTkFrame(self.t_ana)
-        top.pack(fill="x", padx=6, pady=(6, 4))
-        ctk.CTkButton(top, text="选择文件", width=90, command=self._pick_file).pack(side="left", padx=6, pady=6)
-        self.file_entry = ctk.CTkEntry(top, placeholder_text="题目文件路径（支持拖入任意后缀文件）")
-        self.file_entry.pack(side="left", fill="x", expand=True, pady=6)
-        ctk.CTkLabel(top, text="递归深度").pack(side="left", padx=(8, 2))
-        self.depth = ctk.CTkOptionMenu(top, values=["1", "2", "3", "4", "5", "6"], width=70)
+        top = theme.card(self.t_ana)
+        top.pack(fill="x", padx=8, pady=(10, 6))
+
+        row_file = theme.panel(top)
+        row_file.pack(fill="x", padx=14, pady=(12, 6))
+        theme.button(row_file, "选择文件", "subtle", width=92, height=32,
+                     command=self._pick_file).pack(side="left")
+        self.file_entry = theme.entry(row_file, placeholder_text="题目文件路径（支持拖入任意后缀文件）")
+        self.file_entry.pack(side="left", fill="x", expand=True, padx=(10, 12))
+        ctk.CTkLabel(row_file, text="递归深度", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(0, 6))
+        self.depth = theme.option_menu(row_file, values=["1", "2", "3", "4", "5", "6"], width=72)
         self.depth.set("4")
         self.depth.pack(side="left")
-        self.ana_btn = ctk.CTkButton(top, text="开始分析", width=100,
-                                     fg_color="#d4380d", hover_color="#ad250b",
-                                     command=self._start_analysis)
-        self.ana_btn.pack(side="left", padx=(6, 3))
-        self.stop_btn = ctk.CTkButton(top, text="停止", width=70, state="disabled",
-                                      fg_color="#595959", hover_color="#434343",
-                                      command=self._stop_analysis)
-        self.stop_btn.pack(side="left", padx=3)
-        ctk.CTkButton(top, text="导出报告", width=90, fg_color="#1d6fa5", hover_color="#15547d",
-                      command=self._export_report).pack(side="left", padx=3)
-        ctk.CTkButton(top, text="报告/导出目录", width=110, fg_color="#444", hover_color="#555",
-                      command=self._open_output_dirs).pack(side="left", padx=3)
 
-        body = ctk.CTkFrame(self.t_ana)
-        body.pack(fill="both", expand=True, padx=6, pady=4)
+        row_act = theme.panel(top)
+        row_act.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkLabel(row_act, text="独立进程分析 · 单文件最长 300 秒 · 报告写入 reports、提取文件写入 workspace",
+                     font=theme.font(theme.FONT_SMALL), text_color=theme.TEXT_MUTE,
+                     anchor="w").pack(side="left")
+        theme.button(row_act, "报告/导出目录", "ghost", width=112, height=32,
+                     command=self._open_output_dirs).pack(side="right", padx=(6, 0))
+        theme.button(row_act, "导出报告", "subtle", width=92, height=32,
+                     command=self._export_report).pack(side="right", padx=(6, 0))
+        self.stop_btn = theme.button(row_act, "停止", "ghost", width=72, height=32,
+                                     state="disabled", command=self._stop_analysis)
+        self.stop_btn.pack(side="right", padx=(6, 0))
+        self.ana_btn = theme.button(row_act, "开始分析", "primary", width=104, height=32,
+                                    command=self._start_analysis)
+        self.ana_btn.pack(side="right")
 
-        left = ctk.CTkFrame(body, width=330)
-        left.pack(side="left", fill="y", padx=(6, 3), pady=6)
+        body = theme.panel(self.t_ana)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+
+        left = theme.card(body, width=340)
+        left.pack(side="left", fill="y", padx=(0, 8))
         left.pack_propagate(False)
-        ctk.CTkLabel(left, text="文件信息", font=ctk.CTkFont(size=15, weight="bold")).pack(anchor="w", padx=10, pady=(10, 4))
-        self.info_box = ctk.CTkTextbox(left, width=300, height=260, font=ctk.CTkFont(family="Consolas", size=12))
-        self.info_box.pack(fill="x", padx=8)
-        ctk.CTkLabel(left, text="外部工具打开", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10, pady=(12, 4))
-        for name, tname in [("Ghidra 反编译", "ghidra"), ("x64dbg 动态调试", "x64dbg"),
-                            ("dnSpy(.NET)", "dnspy"), ("DIE 查壳", "die"),
-                            ("radare2", "radare2"), ("ExifTool 元数据", "exiftool")]:
-            ctk.CTkButton(left, text=name, height=28,
-                          command=lambda t=tname: self._open_in_tool(t)).pack(fill="x", padx=10, pady=2)
-        ctk.CTkButton(left, text="打开工作区(提取文件目录)", height=28,
-                      fg_color="#444", hover_color="#555",
-                      command=lambda: os.startfile(WORKSPACE)).pack(fill="x", padx=10, pady=(10, 2))
+        theme.section(left, "文件信息", "拖入后自动识别", padx=12, pady=(12, 6))
+        self.info_box = theme.textbox(left, mono_font=True, size=12, width=310, height=250)
+        self.info_box.pack(fill="x", padx=12)
 
-        right = ctk.CTkTabview(body)
-        right.pack(side="left", fill="both", expand=True, padx=(3, 6), pady=6)
+        theme.section(left, "外部工具打开", "需先在工具中心安装", padx=12, pady=(16, 6))
+        tools_grid = theme.panel(left)
+        tools_grid.pack(fill="x", padx=10)
+        for i, (name, tname) in enumerate([("Ghidra 反编译", "ghidra"), ("x64dbg 动态调试", "x64dbg"),
+                                           ("dnSpy(.NET)", "dnspy"), ("DIE 查壳", "die"),
+                                           ("radare2", "radare2"), ("ExifTool 元数据", "exiftool")]):
+            r, c = divmod(i, 2)
+            theme.button(tools_grid, name, "ghost", height=30, font=theme.font(theme.FONT_SMALL),
+                         command=lambda t=tname: self._open_in_tool(t)).grid(
+                row=r, column=c, sticky="ew", padx=2, pady=3)
+        for c in range(2):
+            tools_grid.grid_columnconfigure(c, weight=1)
+        theme.button(left, "打开工作区（提取文件目录）", "ghost", height=30,
+                     command=lambda: os.startfile(WORKSPACE)).pack(fill="x", padx=10, pady=(10, 4))
+        theme.hint(left, "分析结果会自动按类型归档；导出报告可在右侧「分析报告」页签查看。",
+                   wrap=300, padx=10, pady=(0, 10))
+
+        right = theme.tabview(body)
+        right.pack(side="left", fill="both", expand=True)
         right.add("分析报告")
         right.add("提取的文件")
         right.add("实时日志")
-        self.report_box = ctk.CTkTextbox(right.tab("分析报告"),
-                                         font=ctk.CTkFont(family="Microsoft YaHei UI", size=13))
-        self.report_box.pack(fill="both", expand=True)
-        self.extract_box = ctk.CTkTextbox(right.tab("提取的文件"),
-                                          font=ctk.CTkFont(family="Consolas", size=12))
-        self.extract_box.pack(fill="both", expand=True)
-        logbar = ctk.CTkFrame(right.tab("实时日志"))
-        logbar.pack(fill="x")
-        ctk.CTkButton(logbar, text="清空", width=70, height=26,
-                      command=lambda: self._clear_box(self.ana_log)).pack(side="right", padx=4, pady=3)
-        self.ana_log = ctk.CTkTextbox(right.tab("实时日志"),
-                                      font=ctk.CTkFont(family="Consolas", size=12))
-        self.ana_log.pack(fill="both", expand=True)
-        self.progress = ctk.CTkProgressBar(self.t_ana, mode="indeterminate", height=3)
+        self.report_box = theme.textbox(right.tab("分析报告"), size=13)
+        self.report_box.pack(fill="both", expand=True, padx=8, pady=8)
+        self.extract_box = theme.textbox(right.tab("提取的文件"), mono_font=True, size=12)
+        self.extract_box.pack(fill="both", expand=True, padx=8, pady=8)
+        logbar = theme.toolbar(right.tab("实时日志"))
+        logbar.pack(fill="x", padx=8, pady=(8, 4))
+        theme.hint(logbar, "实时日志只保留最近 2000 行；完整结果见导出的报告。",
+                   side="left", padx=(10, 4), pady=6)
+        theme.button(logbar, "清空", "ghost", width=72, height=26,
+                     command=lambda: self._clear_box(self.ana_log)).pack(side="right", padx=8, pady=4)
+        self.ana_log = theme.textbox(right.tab("实时日志"), mono_font=True, size=12)
+        self.ana_log.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.progress = theme.progress(self.t_ana, mode="indeterminate")
         self.progress.set(0)
 
     def _pick_file(self):
@@ -158,18 +260,25 @@ class App(ctk.CTk):
 
     def _decode_dropped(self, paths):
         out = []
-        for x in paths or []:
-            if isinstance(x, bytes):
-                x = x.decode("gbk", errors="replace")
-            if x and os.path.isfile(x):
-                out.append(x)
-        return out
+        for path in paths or []:
+            if isinstance(path, bytes):
+                path = os.fsdecode(path)
+            if path and os.path.isfile(path):
+                out.append(os.path.abspath(path))
+        return list(dict.fromkeys(out))
 
     def _on_drop(self, paths):
+        if self._closing:
+            return
         files = self._decode_dropped(paths)
         if not files:
+            self._append_log(self.ana_log, "[!] 请拖入文件；文件夹和不存在的路径已忽略。\n")
             return
-        self._enqueue(files, clear=True)
+        if self._busy and self._analysis_cancel and self._analysis_cancel.is_set():
+            self._append_log(self.ana_log, "[!] 正在停止分析，请待清理完成后再次拖入。\n")
+            return
+        self.tabs.set("一键分析")
+        self._enqueue(files, clear=not self._busy)
 
     def _start_analysis(self):
         path = self.file_entry.get().strip().strip('"')
@@ -187,15 +296,15 @@ class App(ctk.CTk):
             self._batch_first = True
         else:
             for f in files:
-                if f not in self._file_queue:
+                if f not in self._file_queue and f != self.current_file:
                     self._file_queue.append(f)
-        self.file_entry.delete(0, "end")
-        self.file_entry.insert(0, self._file_queue[0])
-        if not self._busy:
+        if self._busy:
+            self._append_log(self.ana_log, f"[*] 等待分析的文件：{len(self._file_queue)} 个。\n")
+        elif self._file_queue:
             self._next_file()
 
     def _next_file(self):
-        if self._busy:
+        if self._busy or self._closing:
             return
         if not self._file_queue:
             self.ana_btn.configure(state="normal")
@@ -203,6 +312,7 @@ class App(ctk.CTk):
             self.progress.stop()
             self.progress.pack_forget()
             self._busy = False
+            self._set_status("就绪 · 拖入题目文件即可开始分析", "ok", "● 就绪")
             return
         path = self._file_queue.pop(0)
         self.current_file = path
@@ -216,6 +326,10 @@ class App(ctk.CTk):
         else:
             self.report_box.insert("end", "\n\n" + "=" * 90 + "\n")
         self._busy = True
+        self._analysis_done = False
+        self._render_pending = False
+        self._set_status(f"分析中 · {os.path.basename(path)}（剩余队列 {len(self._file_queue)}）",
+                         "warn", "● 分析中")
         self._run_token += 1
         token = self._run_token
         self.ana_btn.configure(state="disabled")
@@ -224,28 +338,61 @@ class App(ctk.CTk):
         self.progress.start()
         depth = int(self.depth.get())
 
+        cancel = self._analysis_cancel = threading.Event()
+
         def work():
-            d = Dispatcher(log_cb=lambda m: self.q.put(("log", (m, token))), max_depth=depth)
             try:
-                rep = d.run(path)
-                self.q.put(("report", (rep, token)))
-            except Exception as e:
-                import traceback
-                self.q.put(("log", (f"[!] 分析失败: {e}\n{traceback.format_exc()}", token)))
+                rep = run_analysis(path, depth, log=lambda m: self._queue_log("log", (str(m)[:8000], token)),
+                                   cancel_event=cancel, timeout=300)
+                if not cancel.is_set():
+                    self.q.put(("report", (rep, token)))
+            except TaskCancelled:
+                self.q.put(("log", ("[*] 分析已停止，所属子进程已清理。", token)))
+            except TaskTimeout:
+                self.q.put(("log", ("[!] 单文件分析超过 300 秒，任务已结束。", token)))
+            except Exception as error:
+                self.q.put(("log", (f"[!] 分析失败（界面仍可使用）: {error}", token)))
             finally:
                 self.q.put(("done", token))
-        threading.Thread(target=work, daemon=True).start()
+        self._analysis_thread = threading.Thread(target=work, daemon=True)
+        self._analysis_thread.start()
 
     def _stop_analysis(self):
-        self._run_token += 1            # 使在跑任务的结果失效
+        self._render_pending = False
         self._file_queue.clear()
-        self._busy = False
-        self.ana_btn.configure(state="normal")
+        if self._analysis_cancel:
+            self._analysis_cancel.set()
         self.stop_btn.configure(state="disabled")
-        self.progress.stop()
-        self.progress.pack_forget()
-        self.q.put(("log", ("[!] 已请求停止：界面已恢复，后台任务结果将被丢弃（CPU 任务会自行结束）\n",
-                            self._run_token)))
+        self._set_status("正在停止分析并清理子进程…", "warn", "● 停止中")
+        self._append_log(self.ana_log, "[*] 正在停止分析并清理子进程，请稍候。\n")
+
+    def _on_close(self):
+        if self._closing:
+            return
+        self._closing = True
+        self._file_queue.clear()
+        if self._analysis_cancel:
+            self._analysis_cancel.set()
+        self.web_workflow.stop()
+        if self._drop_target:
+            self._drop_target.close()
+        self.title(f"{theme.APP_NAME} · 正在停止后台任务")
+        self._set_status("正在停止后台任务并退出…", "warn", "● 退出中")
+        self._finish_close()
+
+    def _finish_close(self):
+        analysis_running = self._analysis_thread and self._analysis_thread.is_alive()
+        if analysis_running or self.web_workflow.is_running() or getattr(self, "_exporting", False):
+            self.after(50, self._finish_close)
+            return
+        self.destroy()
+
+    def report_callback_exception(self, exception_type, error, tb):
+        import traceback
+        from .crashguard import _write
+        _write("GUI CALLBACK", "".join(traceback.format_exception(exception_type, error, tb)))
+        if not self._closing:
+            self.q.put(("log", (f"[!] 界面操作失败：{error}；详情见 workspace/crash.log", self._run_token)))
 
     def _open_output_dirs(self):
         """打开软件目录下的报告/导出文件夹。"""
@@ -256,16 +403,21 @@ class App(ctk.CTk):
             pass
 
     def _export_report(self):
-        """静默导出：报告直接写入软件所在目录 reports\\，不再弹保存对话框/提示框。"""
         if not self.last_report:
-            self.ana_log.insert("end", "[!] 还没有可导出的分析报告\n")
-            self.ana_log.see("end")
+            self._append_log(self.ana_log, "[!] 还没有可导出的分析报告\n")
             return
+        if getattr(self, "_exporting", False):
+            return
+        self._exporting = True
+        self._set_status("正在导出报告（后台线程，界面可继续使用）…", "warn", "● 导出中")
+        threading.Thread(target=self._write_report, args=(self.last_report, self._run_token), daemon=True).start()
+
+    def _write_report(self, report, token):
         try:
             import time as _time
             import html as _html
             os.makedirs(REPORTS_DIR, exist_ok=True)
-            stem = safe_name(os.path.splitext(os.path.basename(self.last_report.path))[0]) or "report"
+            stem = safe_name(os.path.splitext(os.path.basename(report.path))[0]) or "report"
             ts = _time.strftime("%Y%m%d_%H%M%S")
             tp = os.path.join(REPORTS_DIR, f"{stem}_{ts}.txt")
             hp = os.path.join(REPORTS_DIR, f"{stem}_{ts}.html")
@@ -281,17 +433,20 @@ class App(ctk.CTk):
                             lines.append("    " * d + f"      {ln}")
                 for c in r.children:
                     walk_txt(c, d + 1)
-            walk_txt(self.last_report)
+            walk_txt(report)
             with open(tp, "w", encoding="utf-8") as f:
-                f.write("CTFToolbox v2.3 分析报告\n" + "=" * 70 + "\n" + "\n".join(lines))
+                f.write(f"{theme.APP_NAME} {theme.APP_VERSION} 分析报告\n" + "=" * 70 + "\n" + "\n".join(lines))
 
             parts = ["<html><head><meta charset='utf-8'><title>CTFToolbox 报告</title>",
-                     "<style>body{font-family:'Microsoft YaHei UI',sans-serif;background:#1e1e1e;"
-                     "color:#ddd;margin:24px;line-height:1.6}.flag{color:#ff7875;font-weight:bold}"
-                     ".ok{color:#52c41a}.warn{color:#faad14}.info{color:#b8c0cc}"
-                     ".title{color:#69b1ff;font-weight:bold;font-size:16px;margin-top:18px}"
-                     ".detail{margin-left:20px;white-space:pre-wrap;font-family:Consolas}</style></head><body>",
-                     "<h2>CTFToolbox v2.3 分析报告</h2>"]
+                     f"<style>body{{font-family:'Microsoft YaHei UI',sans-serif;"
+                     f"background:{theme.BG_WINDOW};color:{theme.TEXT};margin:24px;line-height:1.7}}"
+                     f".flag{{color:{theme.TAGS['flag']};font-weight:bold}}"
+                     f".ok{{color:{theme.TAGS['ok']}}}.warn{{color:{theme.TAGS['warn']}}}"
+                     f".info{{color:{theme.TAGS['info']}}}"
+                     f".title{{color:{theme.TAGS['title']};font-weight:bold;font-size:15px;margin-top:18px}}"
+                     f".detail{{margin-left:20px;white-space:pre-wrap;"
+                     f"font-family:Consolas,monospace;color:{theme.TEXT_DIM}}}</style></head><body>",
+                     f"<h2>{theme.APP_NAME} {theme.APP_VERSION} 分析报告</h2>"]
 
             def walk_html(r, d=0):
                 parts.append(f"<div class='title'>{'&nbsp;'*d*4}├ {_html.escape(os.path.basename(r.path))} "
@@ -302,47 +457,62 @@ class App(ctk.CTk):
                         parts.append(f"<div class='detail {fnd.level}_d'>{_html.escape(str(fnd.detail))}</div>")
                 for c in r.children:
                     walk_html(c, d + 1)
-            walk_html(self.last_report)
+            walk_html(report)
             parts.append("</body></html>")
             with open(hp, "w", encoding="utf-8") as f:
                 f.write("\n".join(parts))
-            self.ana_log.insert("end", f"[+] 报告已静默导出到软件目录：\n    {hp}\n    {tp}\n")
-            self.ana_log.see("end")
-        except Exception as e:
-            self.ana_log.insert("end", f"[!] 报告导出失败: {e}\n")
-            self.ana_log.see("end")
+            self.q.put(("log", (f"[+] 报告已导出：\n    {hp}\n    {tp}", token)))
+            self.q.put(("status", ("报告已导出 · reports 目录", "ok")))
+        except Exception as error:
+            self.q.put(("log", (f"[!] 报告导出失败: {error}", token)))
+            self.q.put(("status", (f"报告导出失败：{error}", "danger")))
+        finally:
+            self._exporting = False
 
-    def _render_report(self, rep: Report, depth=0):
-        def w(text, tag=None, bold=False):
-            self.report_box.insert("end", text, tag)
-        if depth == 0:
-            from .identifier import identify
+    def _render_report(self, rep: Report):
+        self.info_box.delete("1.0", "end")
+        self.info_box.insert("end", f"文件：{os.path.basename(rep.path)}\n"
+                                   f"类型：{rep.ftype}\n"
+                                   f"大类：{rep.category}\n"
+                                   f"路径：{rep.path}\n")
+        for finding in rep.findings:
+            if finding.title == "文件指纹":
+                self.info_box.insert("end", "\n" + str(finding.detail)[:2000])
+                break
+
+        def chunks(report, depth=0):
+            indent = "    " * depth
+            yield f"{indent}┌─ {os.path.basename(report.path)} [{report.ftype}]\n", "title"
+            for finding in report.findings:
+                yield f"{indent}│  {finding.title[:1000]}\n", finding.level
+                detail = str(finding.detail)
+                if detail:
+                    yield detail[:6000] + ("\n[内容较长，完整内容见导出报告]" if len(detail) > 6000 else "") + "\n\n", finding.level + "_d"
+            for child in report.children:
+                yield from chunks(child, depth + 1)
+
+        self._report_chunks = iter(chunks(rep))
+        self._render_pending = True
+        self._render_count = 0
+        self._render_chars = 0
+
+    def _render_report_chunk(self):
+        deadline = time.monotonic() + 0.008
+        for _ in range(30):
+            if time.monotonic() >= deadline:
+                break
             try:
-                info = identify(rep.path)
-                self.info_box.delete("1.0", "end")
-                self.info_box.insert("end",
-                    f"路径: {rep.path}\n\n类型: {rep.ftype}\n大类: {rep.category}\n"
-                    f"大小: {human_size(info.size)}\n熵值: {info.entropy:.4f}\n"
-                    f"扩展名: {info.ext or '(无)'}\n")
-                if info.extra:
-                    self.info_box.insert("end", "\n特征: " + ", ".join(
-                        f"{k}={v}" for k, v in info.extra.items()))
-            except Exception:
-                pass
-        indent = "    " * depth
-        w(f"{indent}┌─ {os.path.basename(rep.path)}  [{rep.ftype}]\n", "title")
-        for fnd in rep.findings:
-            color = LEVEL_COLORS.get(fnd.level, "#ccc")
-            w(f"{indent}│  ● {fnd.title}\n", fnd.level)
-            if fnd.detail:
-                for line in str(fnd.detail).splitlines()[:80]:
-                    w(f"{indent}│      {line}\n", fnd.level + "_d")
-        if not rep.findings:
-            w(f"{indent}│  （无结果）\n", "info_d")
-        for child in rep.children:
-            self._render_report(child, depth + 1)
-        if depth == 0:
-            w("\n")
+                text, tag = next(self._report_chunks)
+            except StopIteration:
+                self._render_pending = False
+                break
+            self.report_box.insert("end", text, tag)
+            self._render_count += 1
+            self._render_chars += len(text)
+            if self._render_count >= 3000 or self._render_chars >= 500000:
+                self.report_box.insert("end", "\n[界面预览已限量；请导出完整报告。]\n", "warn")
+                self._render_pending = False
+                break
 
     def _open_in_tool(self, tname):
         path = self.file_entry.get().strip().strip('"')
@@ -361,20 +531,27 @@ class App(ctk.CTk):
     # 编码/密码页
     # ===================================================================
     def _build_code(self):
-        top = ctk.CTkFrame(self.t_code)
-        top.pack(fill="both", expand=True, padx=6, pady=6)
-        libbar = ctk.CTkFrame(top)
-        libbar.pack(fill="x", padx=8, pady=(6, 0))
-        ctk.CTkLabel(libbar, text="需要可复制的完整解题脚本？", text_color="#9fb4c8").pack(side="left", padx=6)
-        ctk.CTkButton(libbar, text="📚 Crypto/编码脚本库", width=170,
-                      fg_color="#444", hover_color="#555",
-                      command=lambda: self._goto_scripts("crypto")).pack(side="right", padx=4, pady=4)
-        ctk.CTkLabel(top, text="输入（密文/编码文本/哈希）", anchor="w").pack(fill="x", padx=10, pady=(8, 2))
-        self.code_in = ctk.CTkTextbox(top, height=170, font=ctk.CTkFont(family="Consolas", size=13))
-        self.code_in.pack(fill="x", padx=10)
+        wrap = theme.panel(self.t_code)
+        wrap.pack(fill="both", expand=True, padx=8, pady=8)
 
-        grid = ctk.CTkFrame(top)
-        grid.pack(fill="x", padx=10, pady=8)
+        libbar = theme.toolbar(wrap)
+        libbar.pack(fill="x", pady=(0, 8))
+        theme.hint(libbar, "需要可复制的完整解题脚本？右侧脚本库按方向收录，可查看、复制或另存。",
+                   side="left", padx=(12, 4), pady=8)
+        theme.button(libbar, "📚 Crypto / 编码脚本库", "ghost", width=184,
+                     command=lambda: self._goto_scripts("crypto")).pack(side="right", padx=10, pady=5)
+
+        in_card = theme.card(wrap)
+        in_card.pack(fill="x", pady=(0, 8))
+        theme.field_label(in_card, "输入", "密文 / 编码文本 / 哈希；10 万字符以内", padx=12, pady=(10, 4))
+        self.code_in = theme.textbox(in_card, mono_font=True, size=13, height=170)
+        self.code_in.pack(fill="x", padx=12, pady=(0, 12))
+
+        btn_card = theme.card(wrap)
+        btn_card.pack(fill="x", pady=(0, 8))
+        theme.section(btn_card, "快捷解码", "点一下即用，结果输出到下方", padx=12, pady=(10, 6))
+        grid = theme.panel(btn_card)
+        grid.pack(fill="x", padx=10, pady=(0, 10))
         btns = [
             ("自动解码(全家桶)", self._code_auto),
             ("Base64", lambda: self._code_single("Base64")),
@@ -407,14 +584,23 @@ class App(ctk.CTk):
         ]
         for i, (txt, cmd) in enumerate(btns):
             r, c = divmod(i, 5)
-            ctk.CTkButton(grid, text=txt, width=150, height=30, command=cmd).grid(
+            theme.button(grid, txt, "subtle", width=150, height=30, command=cmd).grid(
                 row=r, column=c, padx=4, pady=4, sticky="ew")
         for c in range(5):
             grid.grid_columnconfigure(c, weight=1)
 
-        ctk.CTkLabel(top, text="结果", anchor="w").pack(fill="x", padx=10)
-        self.code_out = ctk.CTkTextbox(top, font=ctk.CTkFont(family="Consolas", size=13))
-        self.code_out.pack(fill="both", expand=True, padx=10, pady=(2, 10))
+        out_card = theme.card(wrap)
+        out_card.pack(fill="both", expand=True)
+        out_head = theme.panel(out_card)
+        out_head.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(out_head, text="结果", font=theme.font(theme.FONT_BODY, "bold"),
+                     text_color=theme.TEXT_DIM).pack(side="left")
+        theme.button(out_head, "复制结果", "ghost", width=88, height=26,
+                     command=lambda: self._copy_text(self.code_out)).pack(side="right", padx=(6, 0))
+        theme.button(out_head, "清空", "ghost", width=64, height=26,
+                     command=lambda: self._clear_box(self.code_out)).pack(side="right")
+        self.code_out = theme.textbox(out_card, mono_font=True, size=13)
+        self.code_out.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
     def _code_input(self):
         return self.code_in.get("1.0", "end").strip("\n")
@@ -424,16 +610,26 @@ class App(ctk.CTk):
         self.code_out.insert("1.0", text)
 
     def _code_auto(self):
-        t = self._code_input()
-        res = auto_decode(t, depth=3)
-        if not res:
-            self._code_put("未尝试出任何结果")
+        text = self._code_input()
+        if getattr(self, "_code_running", False):
             return
-        lines = []
-        for chain, val, score in res[:40]:
-            mark = "★" if score >= 6 else " "
-            lines.append(f"{mark} [{chain}]  (可读分 {score:.1f})\n{val[:500]}\n{'-'*70}")
-        self._code_put("\n".join(lines))
+        if len(text) > 100000:
+            self._code_put("自动解码最多接收 100000 个字符；大文件请使用文件分析。")
+            return
+        self._code_running = True
+        self._code_put("正在后台自动解码…")
+
+        def work():
+            try:
+                results = auto_decode(text, depth=3)
+                lines = [f"[{chain}] (可读分 {score:.1f})\n{value[:500]}\n{'-'*70}"
+                         for chain, value, score in results[:40]]
+                self.q.put(("code_replace", "\n".join(lines) or "未尝试出任何结果"))
+            except Exception as error:
+                self.q.put(("code_replace", f"解码失败: {error}"))
+            finally:
+                self._code_running = False
+        threading.Thread(target=work, daemon=True).start()
 
     def _code_single(self, want):
         t = self._code_input()
@@ -471,7 +667,11 @@ class App(ctk.CTk):
         self._code_put("\n".join(out))
 
     def _code_crackhash(self):
-        t = self._code_input().strip().split()[0]
+        tokens = self._code_input().strip().split()
+        if not tokens:
+            self._code_put("请先输入哈希值。")
+            return
+        t = tokens[0]
         self.code_out.delete("1.0", "end")
         self.code_out.insert("end", f"正在用内置弱口令表爆破 {t} …\n")
         wl = self.wordlist
@@ -543,29 +743,37 @@ class App(ctk.CTk):
     def _build_cipher(self):
         from . import modules_codes as mc
         from . import modules_morecode as mm
-        top = ctk.CTkFrame(self.t_cipher)
-        top.pack(fill="both", expand=True, padx=6, pady=6)
-        libbar = ctk.CTkFrame(top)
-        libbar.pack(fill="x", padx=8, pady=(6, 0))
-        ctk.CTkLabel(libbar, text="需要可复制的完整解题脚本？", text_color="#9fb4c8").pack(side="left", padx=6)
-        ctk.CTkButton(libbar, text="📚 Crypto 密码学脚本库", width=180,
-                      fg_color="#444", hover_color="#555",
-                      command=lambda: self._goto_scripts("crypto")).pack(side="right", padx=4, pady=4)
-        ctk.CTkLabel(top, text="输入（密文 / 明文 / 数据，XOR 与对称加密支持 Hex 或 Base64）",
-                     anchor="w").pack(fill="x", padx=10, pady=(8, 2))
-        self.ci_in = ctk.CTkTextbox(top, height=150, font=ctk.CTkFont(family="Consolas", size=13))
-        self.ci_in.pack(fill="x", padx=10)
-        prow = ctk.CTkFrame(top)
-        prow.pack(fill="x", padx=10, pady=6)
-        ctk.CTkLabel(prow, text="密钥/参数").pack(side="left")
-        self.ci_key = ctk.CTkEntry(prow, placeholder_text="维吉尼亚/Playfair/AES 密钥；仿射填 a,b；对称填 算法:模式:密钥 如 AES:CBC:123456")
-        self.ci_key.pack(side="left", fill="x", expand=True, padx=6)
-        self.ci_hex = ctk.StringVar(value="off")
-        ctk.CTkCheckBox(prow, text="密钥为Hex", variable=self.ci_hex,
-                        onvalue="on", offvalue="off", width=90).pack(side="left")
+        wrap = theme.panel(self.t_cipher)
+        wrap.pack(fill="both", expand=True, padx=8, pady=8)
 
-        grid = ctk.CTkScrollableFrame(top, height=300)
-        grid.pack(fill="both", expand=True, padx=8, pady=4)
+        libbar = theme.toolbar(wrap)
+        libbar.pack(fill="x", pady=(0, 8))
+        theme.hint(libbar, "需要可复制的完整解题脚本？脚本库「Crypto 密码学」方向可直接取用。",
+                   side="left", padx=(12, 4), pady=8)
+        theme.button(libbar, "📚 Crypto 密码学脚本库", "ghost", width=186,
+                     command=lambda: self._goto_scripts("crypto")).pack(side="right", padx=10, pady=5)
+
+        in_card = theme.card(wrap)
+        in_card.pack(fill="x", pady=(0, 8))
+        theme.field_label(in_card, "输入", "密文 / 明文 / 数据；XOR 与对称加密支持 Hex 或 Base64",
+                          padx=12, pady=(10, 4))
+        self.ci_in = theme.textbox(in_card, mono_font=True, size=13, height=150)
+        self.ci_in.pack(fill="x", padx=12)
+        prow = theme.panel(in_card)
+        prow.pack(fill="x", padx=12, pady=(8, 12))
+        ctk.CTkLabel(prow, text="密钥 / 参数", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(0, 8))
+        self.ci_key = theme.entry(prow, placeholder_text="维吉尼亚/Playfair/AES 密钥；仿射填 a,b；对称填 算法:模式:密钥 如 AES:CBC:123456")
+        self.ci_key.pack(side="left", fill="x", expand=True)
+        self.ci_hex = ctk.StringVar(value="off")
+        theme.checkbox(prow, "密钥为 Hex", variable=self.ci_hex,
+                       onvalue="on", offvalue="off", width=104).pack(side="left", padx=(10, 0))
+
+        op_card = theme.card(wrap)
+        op_card.pack(fill="x", pady=(0, 8))
+        theme.section(op_card, "加解密操作", "32 项内置算法，点击即执行", padx=12, pady=(10, 6))
+        grid = theme.scroll(op_card, height=232)
+        grid.pack(fill="x", padx=12, pady=(0, 12))
 
         def out(res):
             self.ci_out.delete("1.0", "end")
@@ -648,13 +856,23 @@ class App(ctk.CTk):
         ]
         for i, (txt, cmd) in enumerate(btns):
             r, c = divmod(i, 4)
-            ctk.CTkButton(grid, text=txt, height=30, command=cmd).grid(
+            theme.button(grid, txt, "subtle", height=30, command=cmd).grid(
                 row=r, column=c, padx=4, pady=4, sticky="ew")
         for c in range(4):
             grid.grid_columnconfigure(c, weight=1)
-        ctk.CTkLabel(top, text="结果", anchor="w").pack(fill="x", padx=10)
-        self.ci_out = ctk.CTkTextbox(top, height=150, font=ctk.CTkFont(family="Consolas", size=13))
-        self.ci_out.pack(fill="both", expand=True, padx=10, pady=(2, 10))
+
+        out_card = theme.card(wrap)
+        out_card.pack(fill="both", expand=True)
+        out_head = theme.panel(out_card)
+        out_head.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(out_head, text="结果", font=theme.font(theme.FONT_BODY, "bold"),
+                     text_color=theme.TEXT_DIM).pack(side="left")
+        theme.button(out_head, "复制结果", "ghost", width=88, height=26,
+                     command=lambda: self._copy_text(self.ci_out)).pack(side="right", padx=(6, 0))
+        theme.button(out_head, "清空", "ghost", width=64, height=26,
+                     command=lambda: self._clear_box(self.ci_out)).pack(side="right")
+        self.ci_out = theme.textbox(out_card, mono_font=True, size=13, height=150)
+        self.ci_out.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
     def _input_bytes(self, t):
         import binascii, base64
@@ -766,24 +984,33 @@ class App(ctk.CTk):
     def _build_util(self):
         from . import modules_util as mu
         from . import modules_morecode as mm
-        top = ctk.CTkFrame(self.t_util)
-        top.pack(fill="both", expand=True, padx=6, pady=6)
-        libbar = ctk.CTkFrame(top)
-        libbar.pack(fill="x", padx=8, pady=(6, 0))
-        ctk.CTkLabel(libbar, text="需要可复制的完整解题脚本？", text_color="#9fb4c8").pack(side="left", padx=6)
-        ctk.CTkButton(libbar, text="📚 Utils 实用脚本库", width=170,
-                      fg_color="#444", hover_color="#555",
-                      command=lambda: self._goto_scripts("utils")).pack(side="right", padx=4, pady=4)
-        ctk.CTkLabel(top, text="输入", anchor="w").pack(fill="x", padx=10, pady=(8, 2))
-        self.u_in = ctk.CTkTextbox(top, height=130, font=ctk.CTkFont(family="Consolas", size=13))
-        self.u_in.pack(fill="x", padx=10)
-        prow = ctk.CTkFrame(top)
-        prow.pack(fill="x", padx=10, pady=6)
-        ctk.CTkLabel(prow, text="参数").pack(side="left")
-        self.u_param = ctk.CTkEntry(prow, placeholder_text="正则表达式 / 替换文本 等（按需）")
-        self.u_param.pack(side="left", fill="x", expand=True, padx=6)
-        grid = ctk.CTkFrame(top)
-        grid.pack(fill="x", padx=10)
+        wrap = theme.panel(self.t_util)
+        wrap.pack(fill="both", expand=True, padx=8, pady=8)
+
+        libbar = theme.toolbar(wrap)
+        libbar.pack(fill="x", pady=(0, 8))
+        theme.hint(libbar, "需要可复制的完整解题脚本？脚本库「Utils 实用工具」方向可直接取用。",
+                   side="left", padx=(12, 4), pady=8)
+        theme.button(libbar, "📚 Utils 实用脚本库", "ghost", width=176,
+                     command=lambda: self._goto_scripts("utils")).pack(side="right", padx=10, pady=5)
+
+        in_card = theme.card(wrap)
+        in_card.pack(fill="x", pady=(0, 8))
+        theme.field_label(in_card, "输入", "按工具需要粘贴文本；参数可留空", padx=12, pady=(10, 4))
+        self.u_in = theme.textbox(in_card, mono_font=True, size=13, height=120)
+        self.u_in.pack(fill="x", padx=12)
+        prow = theme.panel(in_card)
+        prow.pack(fill="x", padx=12, pady=(8, 12))
+        ctk.CTkLabel(prow, text="参数", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(0, 8))
+        self.u_param = theme.entry(prow, placeholder_text="正则表达式 / 替换文本 等（按需）")
+        self.u_param.pack(side="left", fill="x", expand=True)
+
+        op_card = theme.card(wrap)
+        op_card.pack(fill="x", pady=(0, 8))
+        theme.section(op_card, "实用工具", "13 项常用换算与处理", padx=12, pady=(10, 6))
+        grid = theme.panel(op_card)
+        grid.pack(fill="x", padx=10, pady=(0, 10))
 
         def out(res):
             self.u_out.delete("1.0", "end")
@@ -822,13 +1049,23 @@ class App(ctk.CTk):
         ]
         for i, (txt, cmd) in enumerate(btns):
             r, c = divmod(i, 4)
-            ctk.CTkButton(grid, text=txt, height=30, width=180, command=cmd).grid(
+            theme.button(grid, txt, "subtle", height=30, width=180, command=cmd).grid(
                 row=r, column=c, padx=4, pady=4, sticky="ew")
         for c in range(4):
             grid.grid_columnconfigure(c, weight=1)
-        ctk.CTkLabel(top, text="结果", anchor="w").pack(fill="x", padx=10)
-        self.u_out = ctk.CTkTextbox(top, font=ctk.CTkFont(family="Consolas", size=13))
-        self.u_out.pack(fill="both", expand=True, padx=10, pady=(2, 10))
+
+        out_card = theme.card(wrap)
+        out_card.pack(fill="both", expand=True)
+        out_head = theme.panel(out_card)
+        out_head.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(out_head, text="结果", font=theme.font(theme.FONT_BODY, "bold"),
+                     text_color=theme.TEXT_DIM).pack(side="left")
+        theme.button(out_head, "复制结果", "ghost", width=88, height=26,
+                     command=lambda: self._copy_text(self.u_out)).pack(side="right", padx=(6, 0))
+        theme.button(out_head, "清空", "ghost", width=64, height=26,
+                     command=lambda: self._clear_box(self.u_out)).pack(side="right")
+        self.u_out = theme.textbox(out_card, mono_font=True, size=13)
+        self.u_out.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
     def _fmt_ts(self, res):
         if not res:
@@ -858,24 +1095,35 @@ class App(ctk.CTk):
     # 专项工具页
     # ===================================================================
     def _build_tools(self):
-        libbar = ctk.CTkFrame(self.t_tool)
-        libbar.pack(fill="x", padx=6, pady=(6, 0))
-        ctk.CTkLabel(libbar, text="脚本库：", text_color="#9fb4c8").pack(side="left", padx=(6, 2))
-        for txt, cat in [("📚 Misc杂项", "misc"), ("📁 Reverse逆向", "reverse"),
-                         ("🔍 Forensics取证", "forensics")]:
-            ctk.CTkButton(libbar, text=txt, width=140, fg_color="#444", hover_color="#555",
-                          command=lambda c=cat: self._goto_scripts(c)).pack(side="left", padx=4, pady=4)
-        bar = ctk.CTkFrame(self.t_tool)
-        bar.pack(fill="x", padx=6, pady=6)
-        ctk.CTkButton(bar, text="选择文件", width=90, command=self._pick_tool_file).pack(side="left", padx=6, pady=6)
-        self.tool_file = ctk.CTkEntry(bar, placeholder_text="目标文件")
-        self.tool_file.pack(side="left", fill="x", expand=True, pady=6)
-        ctk.CTkButton(bar, text="选择字典", width=90, command=self._pick_wordlist).pack(side="left", padx=6)
-        self.wl_label = ctk.CTkLabel(bar, text="字典: 内置弱口令表", width=200, anchor="w")
-        self.wl_label.pack(side="left")
+        wrap = theme.panel(self.t_tool)
+        wrap.pack(fill="both", expand=True, padx=8, pady=8)
 
-        grid = ctk.CTkFrame(self.t_tool)
-        grid.pack(fill="x", padx=6)
+        libbar = theme.toolbar(wrap)
+        libbar.pack(fill="x", pady=(0, 8))
+        theme.hint(libbar, "脚本库直达：", side="left", padx=(12, 6), pady=8)
+        for txt, cat in [("📚 Misc 杂项", "misc"), ("📁 Reverse 逆向", "reverse"),
+                         ("🔍 Forensics 取证", "forensics")]:
+            theme.button(libbar, txt, "ghost", width=142, height=28,
+                         command=lambda c=cat: self._goto_scripts(c)).pack(side="left", padx=(0, 6), pady=5)
+
+        file_card = theme.card(wrap)
+        file_card.pack(fill="x", pady=(0, 8))
+        theme.section(file_card, "目标文件", "专项工具只对单个文件做只读分析", padx=12, pady=(10, 6))
+        bar = theme.panel(file_card)
+        bar.pack(fill="x", padx=12, pady=(0, 12))
+        theme.button(bar, "选择文件", "subtle", width=92, command=self._pick_tool_file).pack(side="left")
+        self.tool_file = theme.entry(bar, placeholder_text="目标文件路径（可拖入或手动选择）")
+        self.tool_file.pack(side="left", fill="x", expand=True, padx=8)
+        theme.button(bar, "选择字典", "subtle", width=92, command=self._pick_wordlist).pack(side="left")
+        self.wl_label = ctk.CTkLabel(bar, text="字典：内置弱口令表", width=190, anchor="w",
+                                     font=theme.font(theme.FONT_SMALL), text_color=theme.TEXT_MUTE)
+        self.wl_label.pack(side="left", padx=(8, 0))
+
+        grid_card = theme.card(wrap)
+        grid_card.pack(fill="x", pady=(0, 8))
+        theme.section(grid_card, "专项分析", "压缩包 / 隐写 / 逆向 / 取证 / 日志", padx=12, pady=(10, 6))
+        grid = theme.scroll(grid_card, height=232)
+        grid.pack(fill="x", padx=12, pady=(0, 12))
         btns = [
             ("压缩包弱口令+解压", self._m_archive),
             ("压缩包大字典爆破", self._m_archive_big),
@@ -916,13 +1164,23 @@ class App(ctk.CTk):
         ]
         for i, (txt, cmd) in enumerate(btns):
             r, c = divmod(i, 3)
-            ctk.CTkButton(grid, text=txt, height=34, command=cmd).grid(
+            theme.button(grid, txt, "subtle", height=32, command=cmd).grid(
                 row=r, column=c, padx=5, pady=5, sticky="ew")
         for c in range(3):
             grid.grid_columnconfigure(c, weight=1)
 
-        self.tool_out = ctk.CTkTextbox(self.t_tool, font=ctk.CTkFont(family="Consolas", size=12))
-        self.tool_out.pack(fill="both", expand=True, padx=6, pady=6)
+        out_card = theme.card(wrap)
+        out_card.pack(fill="both", expand=True)
+        out_head = theme.panel(out_card)
+        out_head.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(out_head, text="分析输出", font=theme.font(theme.FONT_BODY, "bold"),
+                     text_color=theme.TEXT_DIM).pack(side="left")
+        theme.button(out_head, "复制结果", "ghost", width=88, height=26,
+                     command=lambda: self._copy_text(self.tool_out)).pack(side="right", padx=(6, 0))
+        theme.button(out_head, "清空", "ghost", width=64, height=26,
+                     command=lambda: self._clear_box(self.tool_out)).pack(side="right")
+        self.tool_out = theme.textbox(out_card, mono_font=True, size=12)
+        self.tool_out.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
     def _pick_tool_file(self):
         p = filedialog.askopenfilename()
@@ -1220,76 +1478,78 @@ class App(ctk.CTk):
     # Web / Pwn 页
     # ===================================================================
     def _build_web(self):
-        wrap = ctk.CTkFrame(self.t_web)
-        wrap.pack(fill="both", expand=True, padx=6, pady=6)
+        wrap = theme.panel(self.t_web)
+        wrap.pack(fill="both", expand=True, padx=8, pady=8)
 
-        libbar = ctk.CTkFrame(wrap)
-        libbar.pack(fill="x", padx=6, pady=(6, 0))
-        ctk.CTkLabel(libbar, text="可复制脚本库：", text_color="#9fb4c8").pack(side="left", padx=(6, 2))
-        ctk.CTkButton(libbar, text="📚 Web 脚本/payload", width=170, fg_color="#444", hover_color="#555",
-                      command=lambda: self._goto_scripts("web")).pack(side="left", padx=4, pady=4)
-        ctk.CTkButton(libbar, text="📚 Pwn 利用脚本", width=150, fg_color="#444", hover_color="#555",
-                      command=lambda: self._goto_scripts("pwn")).pack(side="left", padx=4, pady=4)
+        libbar = theme.toolbar(wrap)
+        libbar.pack(fill="x", pady=(0, 8))
+        theme.hint(libbar, "可复制脚本库：", side="left", padx=(12, 6), pady=8)
+        theme.button(libbar, "📚 Web 脚本 / payload", "ghost", width=172, height=28,
+                     command=lambda: self._goto_scripts("web")).pack(side="left", padx=(0, 6), pady=5)
+        theme.button(libbar, "📚 Pwn 利用脚本", "ghost", width=152, height=28,
+                     command=lambda: self._goto_scripts("pwn")).pack(side="left", pady=5)
 
-        wf = ctk.CTkFrame(wrap)
-        wf.pack(fill="x", padx=6, pady=6)
-        ctk.CTkLabel(wf, text="◎ Web  目标 URL / 主机", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8)
-        row = ctk.CTkFrame(wf)
-        row.pack(fill="x", padx=6, pady=4)
-        self.web_url = ctk.CTkEntry(row, placeholder_text="http://target/ 或 10.10.10.10")
-        self.web_url.pack(side="left", fill="x", expand=True, padx=4)
-        ctk.CTkButton(row, text="HTTP探测", width=100, command=self._w_probe).pack(side="left", padx=3)
-        ctk.CTkButton(row, text="目录扫描", width=100, command=self._w_dirs).pack(side="left", padx=3)
-        ctk.CTkButton(row, text="sqlmap", width=100, fg_color="#a8071a",
-                      hover_color="#870809", command=self._w_sqlmap).pack(side="left", padx=3)
-        row2 = ctk.CTkFrame(wf)
-        row2.pack(fill="x", padx=6, pady=4)
-        ctk.CTkLabel(row2, text="端口范围(空=常见1000)").pack(side="left", padx=4)
-        self.port_range = ctk.CTkEntry(row2, width=140, placeholder_text="1-65535")
+        from .ui_web import WebWorkflowFrame
+        self.web_workflow = WebWorkflowFrame(wrap, log=self._wlog, analyze_files=self._on_drop,
+                                             post=lambda callback: self.q.put(("web_callback", callback)))
+        self.web_workflow.pack(fill="x", pady=(0, 8))
+        self.web_url = self.web_workflow.url_entry
+
+        port_card = theme.card(wrap)
+        port_card.pack(fill="x", pady=(0, 8))
+        prow = theme.panel(port_card)
+        prow.pack(fill="x", padx=12, pady=10)
+        theme.hint(prow, "端口扫描", side="left", padx=(0, 10))
+        self.port_range = theme.entry(prow, width=200, placeholder_text="80,443,8000-8100（空=常见端口）")
         self.port_range.pack(side="left")
-        ctk.CTkButton(row2, text="端口扫描(nmap优先)", width=170, command=self._w_ports).pack(side="left", padx=6)
+        theme.button(prow, "开始端口扫描（nmap 优先）", "subtle", width=196,
+                     command=self._w_ports).pack(side="left", padx=(8, 0))
 
-        pf = ctk.CTkFrame(wrap)
-        pf.pack(fill="x", padx=6, pady=6)
-        ctk.CTkLabel(pf, text="◎ Pwn  二进制 / 远程", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=8)
-        pr = ctk.CTkFrame(pf)
-        pr.pack(fill="x", padx=6, pady=4)
-        ctk.CTkButton(pr, text="选择ELF并checksec", width=170, command=self._w_checksec).pack(side="left", padx=4)
-        ctk.CTkLabel(pr, text="IP").pack(side="left", padx=(10, 2))
-        self.pwn_host = ctk.CTkEntry(pr, width=130)
+        pf = theme.card(wrap)
+        pf.pack(fill="x", pady=(0, 8))
+        theme.section(pf, "Pwn 二进制 / 远程", "checksec 与 pwntools 模板", padx=12, pady=(10, 6))
+        pr = theme.panel(pf)
+        pr.pack(fill="x", padx=12, pady=(0, 12))
+        theme.button(pr, "选择 ELF 并 checksec", "subtle", width=168, command=self._w_checksec).pack(side="left")
+        ctk.CTkLabel(pr, text="IP", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(12, 4))
+        self.pwn_host = theme.entry(pr, width=130)
         self.pwn_host.insert(0, "127.0.0.1")
         self.pwn_host.pack(side="left")
-        ctk.CTkLabel(pr, text="端口").pack(side="left", padx=(6, 2))
-        self.pwn_port = ctk.CTkEntry(pr, width=80)
+        ctk.CTkLabel(pr, text="端口", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(8, 4))
+        self.pwn_port = theme.entry(pr, width=84)
         self.pwn_port.insert(0, "9999")
         self.pwn_port.pack(side="left")
-        ctk.CTkButton(pr, text="生成 pwntools exp 模板", width=180, command=self._w_exp).pack(side="left", padx=8)
+        theme.button(pr, "生成 pwntools exp 模板", "subtle", width=184,
+                     command=self._w_exp).pack(side="left", padx=(10, 0))
 
-        self.web_out = ctk.CTkTextbox(wrap, font=ctk.CTkFont(family="Consolas", size=12))
-        self.web_out.pack(fill="both", expand=True, padx=6, pady=6)
+        out_card = theme.card(wrap)
+        out_card.pack(fill="both", expand=True)
+        out_head = theme.panel(out_card)
+        out_head.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(out_head, text="Web / Pwn 输出", font=theme.font(theme.FONT_BODY, "bold"),
+                     text_color=theme.TEXT_DIM).pack(side="left")
+        theme.button(out_head, "复制结果", "ghost", width=88, height=26,
+                     command=lambda: self._copy_text(self.web_out)).pack(side="right", padx=(6, 0))
+        theme.button(out_head, "清空", "ghost", width=64, height=26,
+                     command=lambda: self._clear_box(self.web_out)).pack(side="right")
+        self.web_out = theme.textbox(out_card, mono_font=True, size=12)
+        self.web_out.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+    def _queue_log(self, kind, value):
+        if self._closing:
+            return
+        if self.q.qsize() < 2000:
+            self.q.put((kind, value))
+        else:
+            self._dropped_logs += 1
 
     def _wlog(self, m):
-        self.q.put(("web", str(m) + "\n"))
-
-    def _w_probe(self):
-        u = self.web_url.get().strip()
-        threading.Thread(target=lambda: webtools.http_probe(u, self._wlog), daemon=True).start()
-
-    def _w_dirs(self):
-        u = self.web_url.get().strip()
-        threading.Thread(target=lambda: webtools.dir_scan(u, self._wlog), daemon=True).start()
+        self._queue_log("web", str(m)[:8000] + "\n")
 
     def _w_ports(self):
-        u = self.web_url.get().strip().replace("http://", "").replace("https://", "").split("/")[0].split(":")[0]
-        pr = self.port_range.get().strip() or None
-        threading.Thread(target=lambda: webtools.port_scan(u, pr, self._wlog), daemon=True).start()
-
-    def _w_sqlmap(self):
-        u = self.web_url.get().strip()
-        if not u.startswith("http"):
-            messagebox.showinfo("提示", "sqlmap 需要完整 URL（含参数的页面）")
-            return
-        threading.Thread(target=lambda: webtools.sqlmap_run(u, self._wlog), daemon=True).start()
+        self.web_workflow.start_ports(self.port_range.get().strip())
 
     def _w_checksec(self):
         p = filedialog.askopenfilename(title="选择 ELF 二进制")
@@ -1317,78 +1577,111 @@ class App(ctk.CTk):
     # 工具中心
     # ===================================================================
     def _build_center(self):
-        top = ctk.CTkFrame(self.t_center)
-        top.pack(fill="x", padx=6, pady=6)
-        ctk.CTkLabel(top, text="便携工具统一放在 tools/portable/，仅从官方 GitHub/官网下载；"
-                               "商业软件(IDA/Xshell)请自备正版，逆向推荐 Ghidra/x64dbg。",
-                     text_color="#faad14", wraplength=1100, justify="left").pack(anchor="w", padx=10, pady=6)
-        ctk.CTkButton(top, text="一键预置全部工具与运行时", width=230,
-                      fg_color="#a8071a", hover_color="#870809",
-                      command=self._predownload_all).pack(side="right", padx=4)
-        ctk.CTkButton(top, text="补全便携运行时(JRE/Node/FFmpeg)", width=270,
-                      fg_color="#1d6fa5", hover_color="#15547d",
-                      command=self._bootstrap_runtime).pack(side="right", padx=4)
-        ctk.CTkButton(top, text="刷新检测状态", width=130, command=self._refresh_center).pack(side="right", padx=8)
+        head_card = theme.card(self.t_center)
+        head_card.pack(fill="x", padx=8, pady=(10, 6))
+        theme.notice(head_card, "便携工具统一放在 tools/portable/，仅从官方 GitHub / 官网下载；"
+                                "商业软件（IDA / Xshell）请自备正版，逆向推荐 Ghidra / x64dbg。",
+                     "warn", wrap=880, padx=12, pady=(12, 8))
+        btns = theme.panel(head_card)
+        btns.pack(fill="x", padx=12, pady=(0, 12))
+        theme.hint(btns, "首次准备约 1～2 GB，失败项会自动跳过并记录到下方安装日志。",
+                   side="left", padx=(2, 8))
+        theme.button(btns, "一键预置全部工具与运行时", "danger", width=234,
+                     command=self._predownload_all).pack(side="right")
+        theme.button(btns, "补全便携运行时（JRE/Node/FFmpeg）", "primary", width=274,
+                     command=self._bootstrap_runtime).pack(side="right", padx=(0, 6))
+        theme.button(btns, "刷新检测状态", "subtle", width=130,
+                     command=self._refresh_center).pack(side="right", padx=(0, 6))
 
-        self.center_scroll = ctk.CTkScrollableFrame(self.t_center)
-        self.center_scroll.pack(fill="both", expand=True, padx=6)
+        self.center_scroll = theme.scroll(self.t_center)
+        self.center_scroll.pack(fill="both", expand=True, padx=8)
         self.center_rows = {}
-        logf = ctk.CTkFrame(self.t_center)
-        logf.pack(fill="both", padx=6, pady=6)
-        ctk.CTkLabel(logf, text="安装日志").pack(anchor="w", padx=8)
-        self.center_log = ctk.CTkTextbox(logf, height=160, font=ctk.CTkFont(family="Consolas", size=12))
-        self.center_log.pack(fill="x", padx=8, pady=(0, 8))
+        logf = theme.card(self.t_center)
+        logf.pack(fill="x", padx=8, pady=(6, 10))
+        log_head = theme.panel(logf)
+        log_head.pack(fill="x", padx=12, pady=(10, 4))
+        ctk.CTkLabel(log_head, text="安装日志", font=theme.font(theme.FONT_BODY, "bold"),
+                     text_color=theme.TEXT_DIM).pack(side="left")
+        theme.button(log_head, "复制日志", "ghost", width=92, height=26,
+                     command=lambda: self._copy_text(self.center_log)).pack(side="right", padx=(6, 0))
+        theme.button(log_head, "清空", "ghost", width=64, height=26,
+                     command=lambda: self._clear_box(self.center_log)).pack(side="right")
+        self.center_log = theme.textbox(logf, mono_font=True, size=12, height=160)
+        self.center_log.pack(fill="x", padx=12, pady=(0, 12))
         self._refresh_center()
 
     def _clog(self, m):
-        self.q.put(("center", str(m) + "\n"))
+        self._queue_log("center", str(m)[:8000] + "\n")
 
     def _refresh_center(self):
+        if self._center_detecting or self._closing:
+            return
+        self._center_detecting = True
+        self._clog("[*] 正在后台检测工具，界面可继续使用。")
+
+        def work():
+            try:
+                toolsmgr._cache.clear()
+                status = toolsmgr.detect_all()
+                self.q.put(("center_status", status))
+            except Exception as error:
+                self.q.put(("center_status", {}))
+                self._clog(f"[!] 工具检测失败: {error}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_center(self, status):
+        self._center_detecting = False
         for w in self.center_scroll.winfo_children():
             w.destroy()
         self.center_rows.clear()
-        status = toolsmgr.detect_all()
+        total = len(toolsmgr.TOOL_META)
+        ready = sum(1 for k in toolsmgr.TOOL_META if status.get(k))
         for key, (cn, desc, kind) in toolsmgr.TOOL_META.items():
-            row = ctk.CTkFrame(self.center_scroll)
-            row.pack(fill="x", pady=3, padx=2)
             p = status.get(key)
-            dot = "● 已就绪" if p else "○ 未安装"
-            color = "#3ecf8e" if p else "#8c8c8c"
-            ctk.CTkLabel(row, text=dot, text_color=color, width=90).pack(side="left", padx=(8, 4))
-            ctk.CTkLabel(row, text=cn, width=150, anchor="w",
-                         font=ctk.CTkFont(weight="bold")).pack(side="left")
-            ctk.CTkLabel(row, text=desc, anchor="w", text_color="#aab2bd").pack(side="left", fill="x", expand=True)
+            row = ctk.CTkFrame(self.center_scroll, fg_color=theme.BG_SURFACE,
+                               corner_radius=theme.RADIUS_SMALL, border_width=1,
+                               border_color=theme.BORDER_SOFT)
+            row.pack(fill="x", pady=2, padx=2)
+            ctk.CTkLabel(row, text="● 已就绪" if p else "○ 未安装", width=92, anchor="w",
+                         font=theme.font(theme.FONT_SMALL, "bold"),
+                         text_color=theme.SUCCESS if p else theme.TEXT_MUTE).pack(
+                side="left", padx=(10, 4), pady=7)
+            ctk.CTkLabel(row, text=cn, width=152, anchor="w",
+                         font=theme.font(theme.FONT_BODY, "bold"),
+                         text_color=theme.TEXT).pack(side="left", pady=7)
+            ctk.CTkLabel(row, text=desc, anchor="w", font=theme.font(theme.FONT_SMALL),
+                         text_color=theme.TEXT_MUTE).pack(
+                side="left", fill="x", expand=True, pady=7)
+
+            def add(text, cmd, style="subtle", width=124):
+                theme.button(row, text, style, width=width, height=28,
+                             command=cmd).pack(side="right", padx=8, pady=5)
+
             if p:
-                ctk.CTkButton(row, text="启动", width=80,
-                              command=lambda k=key: self._launch_center(k)).pack(side="right", padx=6, pady=3)
-            else:
-                if kind == "portable":
-                    ctk.CTkButton(row, text="一键下载安装", width=120,
-                                  command=lambda k=key: self._install_center(k)).pack(side="right", padx=6, pady=3)
-                elif kind.startswith("winget:"):
-                    pkg = kind.split(":", 1)[1]
-                    ctk.CTkButton(row, text=f"winget 安装", width=120,
-                                  command=lambda x=pkg: self._winget_center(x)).pack(side="right", padx=6, pady=3)
-                elif kind.startswith("pip:"):
-                    pkg = kind.split(":", 1)[1]
-                    ctk.CTkButton(row, text="pip 安装", width=120,
-                                  command=lambda x=pkg: self._pip_center(x)).pack(side="right", padx=6, pady=3)
-                elif kind == "wsl":
-                    ctk.CTkButton(row, text="安装 Kali(WSL2)", width=140,
-                                  command=self._kali_install).pack(side="right", padx=6, pady=3)
-                    ctk.CTkButton(row, text="Kali 装全套CTF工具", width=160,
-                                  command=self._kali_suite).pack(side="right", padx=2, pady=3)
-                elif kind.startswith("runtime:"):
-                    rt = kind.split(":", 1)[1]
-                    ctk.CTkButton(row, text="下载便携运行时", width=130,
-                                  command=lambda x=rt: self._install_runtime(x)).pack(side="right", padx=6, pady=3)
-                elif kind.startswith("guide"):
-                    url = kind.split(":", 1)[1] if ":" in kind else ""
-                    ctk.CTkButton(row, text="打开官网指引", width=120,
-                                  command=lambda u=url: self._open_url(u)).pack(side="right", padx=6, pady=3)
-                elif kind == "path":
-                    ctk.CTkLabel(row, text="（安装后自动识别 PATH）", text_color="#8c8c8c").pack(side="right", padx=10)
+                add("启动", lambda k=key: self._launch_center(k), "subtle", 82)
+            elif kind == "portable":
+                add("一键下载安装", lambda k=key: self._install_center(k), "primary")
+            elif kind.startswith("winget:"):
+                pkg = kind.split(":", 1)[1]
+                add("winget 安装", lambda x=pkg: self._winget_center(x))
+            elif kind.startswith("pip:"):
+                pkg = kind.split(":", 1)[1]
+                add("pip 安装", lambda x=pkg: self._pip_center(x))
+            elif kind == "wsl":
+                add("安装 Kali（WSL2）", self._kali_install, "subtle", 146)
+                add("Kali 装全套 CTF 工具", self._kali_suite, "subtle", 168)
+            elif kind.startswith("runtime:"):
+                rt = kind.split(":", 1)[1]
+                add("下载便携运行时", lambda x=rt: self._install_runtime(x), "subtle", 134)
+            elif kind.startswith("guide"):
+                url = kind.split(":", 1)[1] if ":" in kind else ""
+                add("打开官网指引", lambda u=url: self._open_url(u))
+            elif kind == "path":
+                ctk.CTkLabel(row, text="（安装后自动识别 PATH）",
+                             font=theme.font(theme.FONT_SMALL),
+                             text_color=theme.TEXT_MUTE).pack(side="right", padx=10, pady=7)
             self.center_rows[key] = (row, p)
+        self._set_status(f"工具检测完成 · {ready}/{total} 已就绪", "ok", "● 就绪")
 
     def _launch_center(self, key):
         if key == "kali":
@@ -1504,34 +1797,35 @@ class App(ctk.CTk):
     # ===================================================================
     def _build_webnav(self):
         from . import webnav
-        wrap = ctk.CTkScrollableFrame(self.t_nav)
-        wrap.pack(fill="both", expand=True, padx=6, pady=6)
-        ctk.CTkLabel(wrap, text="绿色=已镜像到软件目录、断网可用；灰色=在线打开（仅收录正当 CTF/学习工具）",
-                     text_color="#3ecf8e", anchor="w").pack(fill="x", padx=8, pady=(6, 8))
+        wrap = theme.scroll(self.t_nav)
+        wrap.pack(fill="both", expand=True, padx=8, pady=8)
+        legend = theme.toolbar(wrap)
+        legend.pack(fill="x", pady=(0, 8))
+        theme.hint(legend, "绿色「离线打开」= 已镜像到软件目录、断网可用；「在线打开」= 走浏览器（仅收录正当 CTF / 学习工具）。",
+                   side="left", padx=(12, 4), pady=8)
         for cat, items in webnav.DATA.items():
-            cf = ctk.CTkFrame(wrap)
-            cf.pack(fill="x", padx=6, pady=6)
-            ctk.CTkLabel(cf, text=cat, font=ctk.CTkFont(size=14, weight="bold"),
-                         anchor="w").pack(fill="x", padx=10, pady=(8, 2))
+            cf = theme.card(wrap)
+            cf.pack(fill="x", pady=(0, 8))
+            theme.section(cf, cat, f"{len(items)} 项", padx=12, pady=(10, 6))
             for name, url, okey, desc in items:
-                row = ctk.CTkFrame(cf, fg_color="transparent")
+                row = theme.panel(cf)
                 row.pack(fill="x", padx=10, pady=2)
                 off = webnav.offline_path(okey) if okey else None
                 if off:
-                    ctk.CTkButton(row, text="● 离线打开", width=110, fg_color="#237804",
-                                  hover_color="#135200",
-                                  command=lambda p=off: os.startfile(p)).pack(side="left")
-                    ctk.CTkButton(row, text=name, width=200, fg_color="#2f3a4a", hover_color="#3a475a",
-                                  command=lambda u=url: os.startfile(u)).pack(side="left", padx=6)
+                    theme.button(row, "● 离线打开", "success", width=112, height=28,
+                                 command=lambda p=off: os.startfile(p)).pack(side="left")
+                    theme.button(row, name, "subtle", width=200, height=28,
+                                 command=lambda u=url: os.startfile(u)).pack(side="left", padx=6)
                 else:
-                    ctk.CTkButton(row, text="在线打开", width=110, fg_color="#1d6fa5",
-                                  hover_color="#15547d",
-                                  command=lambda u=url: os.startfile(u)).pack(side="left")
-                    ctk.CTkLabel(row, text=name, width=200, anchor="w").pack(side="left", padx=6)
-                ctk.CTkLabel(row, text=desc, text_color="#9aa4b2", anchor="w").pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(wrap, text="重新镜像离线网页（CyberChef 等，需联网）", width=300,
-                      fg_color="#595959", hover_color="#434343",
-                      command=self._remirror_web).pack(pady=10)
+                    theme.button(row, "在线打开", "primary", width=112, height=28,
+                                 command=lambda u=url: os.startfile(u)).pack(side="left")
+                    ctk.CTkLabel(row, text=name, width=200, anchor="w",
+                                 font=theme.font(theme.FONT_BODY),
+                                 text_color=theme.TEXT).pack(side="left", padx=6)
+                ctk.CTkLabel(row, text=desc, anchor="w", font=theme.font(theme.FONT_SMALL),
+                             text_color=theme.TEXT_MUTE).pack(side="left", fill="x", expand=True)
+        theme.button(wrap, "重新镜像离线网页（CyberChef 等，需联网）", "ghost", width=320,
+                     command=self._remirror_web).pack(pady=12)
 
     def _remirror_web(self):
         def work():
@@ -1558,10 +1852,19 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
 
     # ===================================================================
+    # RAC 自动化页（懒加载）
+    # ===================================================================
+    def _build_rac(self):
+        self.rac = RACTab(self.t_rac)
+        self.rac.pack(fill="both", expand=True)
+
+    # ===================================================================
     # 队列分发
     # ===================================================================
     def _on_tab(self):
-        pass
+        builder = getattr(self, "_lazy_tabs", {}).pop(self.tabs.get(), None)
+        if builder:
+            builder()
 
     def _goto_scripts(self, cat="all"):
         """跳转到脚本库标签页并预选方向。"""
@@ -1571,9 +1874,31 @@ class App(ctk.CTk):
     def _clear_box(self, box):
         box.delete("1.0", "end")
 
+    def _copy_text(self, box):
+        """把输出区内容复制到剪贴板，并在底部状态栏给出字符数反馈。"""
+        try:
+            text = box.get("1.0", "end-1c")
+        except Exception:
+            return
+        if not text.strip():
+            self._set_status("没有可复制的内容", "warn")
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self._set_status(f"已复制到剪贴板（{len(text)} 字符）", "ok")
+        except Exception as error:
+            self._set_status(f"复制失败：{error}", "danger")
+
+    def _append_log(self, box, text):
+        box.insert("end", str(text)[-16000:])
+        lines = int(box.index("end-1c").split(".")[0])
+        if lines > 2000:
+            box.delete("1.0", f"{lines - 1600}.0")
+        box.see("end")
+
     def _center_log(self, m):
-        self.center_log.insert("end", m)
-        self.center_log.see("end")
+        self._append_log(self.center_log, m)
 
     def _render_manual(self, rep):
         self.tool_out.delete("1.0", "end")
@@ -1587,79 +1912,99 @@ class App(ctk.CTk):
                 self.tool_out.insert("end", f"  {p}\n", "info_d")
 
     def _drain(self):
+        deadline = time.monotonic() + 0.012
         try:
-            while True:
+            for _ in range(80):
+                if time.monotonic() >= deadline:
+                    break
                 kind, val = self.q.get_nowait()
                 if kind == "log":
-                    m, token = val
+                    message, token = val
                     if token == self._run_token:
-                        self.ana_log.insert("end", m + "\n")
-                        self.ana_log.see("end")
+                        self._append_log(self.ana_log, str(message) + "\n")
+                elif kind == "status":
+                    text, level = val
+                    self._set_status(text, level)
+                elif kind == "drop":
+                    self._on_drop(val)
+                elif kind == "drop_error":
+                    self._append_log(self.ana_log, f"[!] 拖入失败，请改用选择文件：{val}\n")
                 elif kind == "report":
                     rep, token = val
-                    if token != self._run_token:
+                    if token != self._run_token or self._analysis_cancel.is_set():
                         continue
                     self._configure_tags()
                     self._render_report(rep)
                     self.last_report = rep
                     files = []
-                    def walk(r):
-                        for fp in r.extracted:
-                            files.append(fp)
-                        for c in r.children:
-                            walk(c)
+                    def walk(report):
+                        files.extend(report.extracted[:1000])
+                        for child in report.children:
+                            walk(child)
                     walk(rep)
-                    existing = self.extract_box.get("1.0", "end")
-                    for fp in dict.fromkeys(files):
-                        if fp not in existing:
-                            self.extract_box.insert("end", fp + "\n")
+                    self.extract_box.insert("end", "\n".join(dict.fromkeys(files[:1000])) + "\n")
+                    if len(files) > 1000:
+                        self.extract_box.insert("end", "[更多提取文件见导出报告]\n")
                 elif kind == "done":
-                    token = val
-                    if token == self._run_token:
-                        self._busy = False
-                        self._next_file()
+                    if val == self._run_token:
+                        self._analysis_done = True
                 elif kind == "code":
-                    self.code_out.insert("end", val)
+                    self._append_log(self.code_out, val)
+                elif kind == "code_replace":
+                    self._code_put(val)
                 elif kind == "manual":
                     self._configure_tags()
                     self._render_manual(val)
                 elif kind == "manual_log":
-                    self.tool_out.insert("end", val + "\n")
-                    self.tool_out.see("end")
+                    self._append_log(self.tool_out, str(val) + "\n")
                 elif kind == "web":
-                    self.web_out.insert("end", val)
-                    self.web_out.see("end")
+                    self._append_log(self.web_out, val)
+                elif kind == "web_callback":
+                    if not self._closing:
+                        val()
                 elif kind == "web_report":
                     self.web_out.delete("1.0", "end")
-                    for fnd in val.findings:
-                        self.web_out.insert("end", f"● {fnd.title}\n", fnd.level)
-                        if fnd.detail:
-                            self.web_out.insert("end", f"    {fnd.detail}\n\n", fnd.level + "_d")
+                    for finding in val.findings[:300]:
+                        self._append_log(self.web_out, f"{finding.title}\n{str(finding.detail)[:4000]}\n\n")
                 elif kind == "center":
                     self._center_log(val)
+                elif kind == "center_status":
+                    if not self._closing:
+                        self._render_center(val)
                 elif kind == "refresh":
                     self._refresh_center()
                 elif kind == "rebuild_nav":
-                    for w in self.t_nav.winfo_children():
-                        w.destroy()
+                    for widget in self.t_nav.winfo_children():
+                        widget.destroy()
+                    self._lazy_tabs.pop("网页导航", None)
                     self._build_webnav()
         except queue.Empty:
             pass
-        self.after(100, self._drain)
+        except Exception:
+            import traceback
+            self.report_callback_exception(*sys.exc_info())
+        finally:
+            if self._render_pending and not self._closing:
+                try:
+                    self._render_report_chunk()
+                except Exception:
+                    self._render_pending = False
+                    self.report_callback_exception(*sys.exc_info())
+            if self._analysis_done and not self._render_pending:
+                self._analysis_done = False
+                self._busy = False
+                self._next_file()
+            if not self._closing:
+                if self._dropped_logs and self.q.qsize() < 100:
+                    self._append_log(self.ana_log, f"[!] 为保持响应，已省略 {self._dropped_logs} 条高频日志；请查看任务报告。\n")
+                    self._dropped_logs = 0
+                self.after(20 if not self.q.empty() or self._render_pending else 60, self._drain)
 
     def _configure_tags(self):
         # 注意：CTkTextbox.tag_config 禁止 font 参数（与缩放不兼容），仅用颜色区分
-        for box in (self.report_box, self.tool_out, self.web_out):
-            box.tag_config("flag", foreground="#ff7875")
-            box.tag_config("ok", foreground="#52c41a")
-            box.tag_config("warn", foreground="#faad14")
-            box.tag_config("info", foreground="#d9d9d9")
-            box.tag_config("tool", foreground="#69b1ff")
-            box.tag_config("flag_d", foreground="#ff9c97")
-            box.tag_config("ok_d", foreground="#95de64")
-            box.tag_config("warn_d", foreground="#ffd666")
-            box.tag_config("info_d", foreground="#aeb8c2")
-            box.tag_config("title", foreground="#69b1ff")
+        for box in (self.report_box, self.tool_out, self.web_out, self.ana_log,
+                    self.extract_box, self.info_box):
+            theme.apply_tags(box)
 
 
 def main():

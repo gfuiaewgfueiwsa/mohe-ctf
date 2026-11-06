@@ -154,6 +154,12 @@ class Dispatcher:
         try:
             if info.category == "text":
                 self._text_flow(path, raw, rep, indent)
+                # 正文里单独藏着的 base64 / hex 片段，主流程常按哈希处理，这里再扫一遍
+                try:
+                    from . import textscan
+                    textscan.encoded_token_scan(raw.decode("utf-8", "replace"), rep)
+                except Exception:
+                    pass
             elif info.category == "image":
                 # 文件头与图片 magic 不符（被加垃圾头/篡改）时先修复，修复副本会递归分析
                 img_magics = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"BM", b"II*\x00",

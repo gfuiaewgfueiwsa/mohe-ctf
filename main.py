@@ -3,6 +3,9 @@
 用法：
   双击/无参数          启动图形界面
   CTFToolbox.exe --cli <文件> [文件...]   命令行批量分析（报告写入 workspace/cli_report.txt）
+  CTFToolbox.exe --rac "题目描述" [附件...]  RAC 自动化流水线（识别→匹配脚本→填参→执行→提取 flag）
+  CTFToolbox.exe --webauto <URL> --ctf-only   Web 自动化解题（只读、同源、限速的取证链）
+  CTFToolbox.exe --webattack <URL> --ctf-only Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
 """
 import sys
 import os
@@ -56,6 +59,98 @@ def run_cli(files):
     return out
 
 
+def run_rac(args):
+    """RAC 自动化流水线 CLI：--rac "描述" [附件...] 或 --rac -f 附件..."""
+    from ctfbox.rac import RacPipeline
+    from ctfbox.common import WORKSPACE
+
+    rest = list(args)
+    desc, atts = "", []
+    if rest and rest[0] == "-f":
+        atts = [a for a in rest[1:] if os.path.isfile(a)]
+        missing = [a for a in rest[1:] if not os.path.isfile(a)]
+    else:
+        if rest and not os.path.isfile(rest[0]):
+            desc = rest[0]
+            atts = [a for a in rest[1:] if os.path.isfile(a)]
+        else:
+            atts = [a for a in rest if os.path.isfile(a)]
+        missing = [a for a in rest if a != desc and not os.path.isfile(a)]
+    if missing:
+        print("[!] 以下附件不存在，已跳过:", "; ".join(missing[:8]))
+
+    lines = []
+
+    def log(m):
+        try:
+            print(m)
+        except Exception:
+            pass
+        lines.append(str(m))
+
+    pipe = RacPipeline(log_cb=log)
+    res = pipe.run(desc, atts)
+
+    out = os.path.join(WORKSPACE, "rac_cli_report.txt")
+    os.makedirs(WORKSPACE, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fp:
+        fp.write("\n".join(lines) + f"\n\nFLAG: {'; '.join(res.flags) or '(无)'}\n")
+    return out
+
+
+def run_webauto(url):
+    """Web 自动化解题 CLI：--webauto <URL> --ctf-only"""
+    from ctfbox import webauto
+    from ctfbox.common import WORKSPACE
+
+    lines = []
+
+    def log(m):
+        try:
+            print(m)
+        except Exception:
+            pass
+        lines.append(str(m))
+
+    res = webauto.auto_solve(url, log=log)
+    out = os.path.join(WORKSPACE, "webauto_report.txt")
+    os.makedirs(WORKSPACE, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fp:
+        fp.write("\n".join(lines))
+        fp.write("\n\n========== 汇总 ==========\n")
+        fp.write(str(res.get("summary") or ""))
+        fp.write("\n请求数：%s\n" % res.get("requests"))
+        fp.write("FLAG: " + ("; ".join(res.get("flags") or []) or "(无)") + "\n")
+        fp.write("\nJSON 报告：" + webauto.save_report(res) + "\n")
+    return out
+
+
+def run_webattack(url):
+    """深度 Web 全自动 CLI：--webattack <URL> --ctf-only"""
+    from ctfbox import webattack
+    from ctfbox.common import WORKSPACE
+
+    lines = []
+
+    def log(m):
+        try:
+            print(m)
+        except Exception:
+            pass
+        lines.append(str(m))
+
+    res = webattack.campaign(url, log=log)
+    out = os.path.join(WORKSPACE, "webattack_report.txt")
+    os.makedirs(WORKSPACE, exist_ok=True)
+    text = webattack.render(res)
+    with open(out, "w", encoding="utf-8") as fp:
+        fp.write("\n".join(lines))
+        fp.write("\n\n========== 汇总 ==========\n")
+        fp.write(text)
+        fp.write("\n\nJSON 报告：" + webattack.save_report(res) + "\n")
+    return out
+
+
 if __name__ == "__main__":
     # Windows(spawn) + PyInstaller 下 CRC 多进程批量碰撞必需，且必须尽早调用
     try:
@@ -64,7 +159,22 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # 控制台/重定向统一 UTF-8：guard 报错也要可读，不能落在 GBK 默认上乱码
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--analysis-worker":
+        from ctfbox.analysis_worker import worker_main
+        if len(sys.argv) != 5:
+            raise SystemExit(2)
+        raise SystemExit(worker_main(sys.argv[2], int(sys.argv[3]), sys.argv[4]))
+
     if len(sys.argv) > 1 and sys.argv[1] in ("--cli", "-c"):
+        if "--ctf-only" not in sys.argv[2:]:
+            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
         # CLI 模式统一 UTF-8 输出，避免 PowerShell/cmd 默认 GBK 代码页下中文乱码
         # （报告文件本身始终为 UTF-8，这里只修控制台/重定向输出层）。
         if sys.platform.startswith("win"):
@@ -77,7 +187,70 @@ if __name__ == "__main__":
                 _s.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
-        report_path = run_cli(sys.argv[2:])
+        report_path = run_cli([arg for arg in sys.argv[2:] if arg != "--ctf-only"])
+        try:
+            if sys.stdout:
+                print("report written to:", report_path)
+        except Exception:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1] == "--rac":
+        if "--ctf-only" not in sys.argv[2:]:
+            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
+        if sys.platform.startswith("win"):
+            try:
+                os.system("chcp 65001 >nul 2>nul")
+            except Exception:
+                pass
+        for _s in (sys.stdout, sys.stderr):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        report_path = run_rac([arg for arg in sys.argv[2:] if arg != "--ctf-only"])
+        try:
+            if sys.stdout:
+                print("report written to:", report_path)
+        except Exception:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1] in ("--webauto", "--web"):
+        if "--ctf-only" not in sys.argv[2:]:
+            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
+        target = next((a for a in sys.argv[2:] if a != "--ctf-only"), "")
+        if not target:
+            raise SystemExit('用法：CTFToolbox.exe --webauto <URL> --ctf-only')
+        if sys.platform.startswith("win"):
+            try:
+                os.system("chcp 65001 >nul 2>nul")
+            except Exception:
+                pass
+        for _s in (sys.stdout, sys.stderr):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        report_path = run_webauto(target)
+        try:
+            if sys.stdout:
+                print("report written to:", report_path)
+        except Exception:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1] in ("--webattack", "--deep"):
+        if "--ctf-only" not in sys.argv[2:]:
+            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
+        target = next((a for a in sys.argv[2:] if a != "--ctf-only"), "")
+        if not target:
+            raise SystemExit('用法：CTFToolbox.exe --webattack <URL> --ctf-only')
+        if sys.platform.startswith("win"):
+            try:
+                os.system("chcp 65001 >nul 2>nul")
+            except Exception:
+                pass
+        for _s in (sys.stdout, sys.stderr):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        report_path = run_webattack(target)
         try:
             if sys.stdout:
                 print("report written to:", report_path)
@@ -85,8 +258,10 @@ if __name__ == "__main__":
             pass
     else:
         try:
-            from ctfbox.ui_main import main
-            main()
+            from ctfbox.ui_consent import confirm_ctf_use
+            if confirm_ctf_use():
+                from ctfbox.ui_main import main
+                main()
         except Exception:
             # 兜底：启动期异常写入 crash.log 并弹框，避免双击后窗口一闪而过
             import traceback, time

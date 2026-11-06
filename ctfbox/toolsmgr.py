@@ -183,6 +183,12 @@ def detect_one(name: str):
                                      recursive=True))
         if hits:
             result = hits[0]
+    # 1b. PATH_TOOLS 里有些也随包便携分发（nmap、tshark 等），先在自带目录找，
+    #     否则只有系统 PATH 命中才算可用，随包放了也等于没放。
+    if not result and name in PATH_TOOLS:
+        pdir = os.path.join(TOOLS_DIR, name)
+        if os.path.isdir(pdir):
+            result = _walk_find(pdir, PATH_TOOLS[name])
     # 2. PATH（便携运行时 bin 已在导入时前置，故随包 node/java 会优先于系统版本命中）
     if not result and name in PATH_TOOLS:
         for exe in PATH_TOOLS[name]:
@@ -206,19 +212,26 @@ def detect_one(name: str):
     if not result and name == "sqlmap":
         p = _walk_find(os.path.join(TOOLS_DIR, "sqlmap"), ["sqlmap.py"])
         result = p
-    # 5. pip 包（必须用外部解释器，打包后 sys.executable 是本 exe）
+    # 5. pip 包：先查随包便携 Python（离线也能用），再查系统 Python
     if not result and name in ("volatility3", "binwalk"):
         from .common import external_python
+        mod = "volatility3" if name == "volatility3" else "binwalk"
+        candidates = []
+        bundled = os.path.join(RUNTIME_DIR, "python", "python.exe")
+        if os.path.isfile(bundled):
+            candidates.append(bundled)
         py = external_python()
-        if py:
-            mod = "volatility3" if name == "volatility3" else "binwalk"
+        if py and py not in candidates:
+            candidates.append(py)
+        for candidate in candidates:
             try:
-                r = subprocess.run([py, "-c", f"import {mod}"],
-                                   capture_output=True, timeout=15)
+                r = subprocess.run([candidate, "-c", f"import {mod}"],
+                                   capture_output=True, timeout=20)
                 if r.returncode == 0:
                     result = f"pip:{name}"
+                    break
             except Exception:
-                pass
+                continue
     # 6. WSL kali
     if name == "kali":
         try:

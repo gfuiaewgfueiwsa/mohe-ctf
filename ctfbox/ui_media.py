@@ -21,6 +21,7 @@ import customtkinter as ctk
 
 from .common import WORKSPACE, EXPORTS_DIR, safe_name
 from . import toolsmgr
+from . import ui_theme as theme
 
 try:
     from PIL import Image, ImageSequence, ImageOps, ImageEnhance, ImageTk, ImageFilter
@@ -54,12 +55,14 @@ def _ffplay():
 
 class MediaFrame(ctk.CTkFrame):
     def __init__(self, master, **kw):
+        kw.setdefault("fg_color", "transparent")
         super().__init__(master, **kw)
         if Image is None:
-            ctk.CTkLabel(self, text="Pillow/numpy 未安装，媒体中心不可用").pack(pady=40)
+            ctk.CTkLabel(self, text="Pillow/numpy 未安装，媒体中心不可用",
+                         font=theme.font(13), text_color=theme.WARNING).pack(pady=40)
             return
-        self.tabs = ctk.CTkTabview(self)
-        self.tabs.pack(fill="both", expand=True)
+        self.tabs = theme.tabview(self)
+        self.tabs.pack(fill="both", expand=True, padx=8, pady=8)
         self.t_img = self.tabs.add("图片查看器")
         self.t_vid = self.tabs.add("视频播放器")
         self.t_aud = self.tabs.add("音频隐写")
@@ -84,71 +87,80 @@ class MediaFrame(ctk.CTkFrame):
     # 图片查看器
     # ======================================================================
     def _build_image(self):
-        bar = ctk.CTkFrame(self.t_img)
-        bar.pack(fill="x", padx=6, pady=4)
-        ctk.CTkButton(bar, text="打开图片", width=80, command=self.img_open).pack(side="left", padx=3, pady=4)
-        ctk.CTkButton(bar, text="放大+", width=60, command=lambda: self.img_zoom(1.25)).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="缩小-", width=60, command=lambda: self.img_zoom(0.8)).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="适应", width=60, command=self.img_fit).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="1:1", width=50, command=lambda: self.img_set_zoom(1.0)).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="↺90", width=50, command=lambda: self.img_rot(90)).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="↻90", width=50, command=lambda: self.img_rot(-90)).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="水平翻转", width=70, command=lambda: self.img_flip(0)).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="垂直翻转", width=70, command=lambda: self.img_flip(1)).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="反相", width=55, command=self.img_invert).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="重置", width=55, command=self.img_reset).pack(side="left", padx=2)
+        tools = theme.toolbar(self.t_img)
+        tools.pack(fill="x", padx=8, pady=(10, 6))
+        ctk.CTkLabel(tools, text="查看", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(12, 6))
+        for text, cmd, width in (("打开图片", self.img_open, 88), ("放大 +", lambda: self.img_zoom(1.25), 68),
+                                 ("缩小 -", lambda: self.img_zoom(0.8), 68), ("适应", self.img_fit, 62),
+                                 ("1:1", lambda: self.img_set_zoom(1.0), 54), ("↺ 90", lambda: self.img_rot(90), 58),
+                                 ("↻ 90", lambda: self.img_rot(-90), 58), ("水平翻转", lambda: self.img_flip(0), 80),
+                                 ("垂直翻转", lambda: self.img_flip(1), 80), ("反相", self.img_invert, 60),
+                                 ("重置", self.img_reset, 60)):
+            theme.button(tools, text, "subtle", width=width, height=28,
+                         command=cmd).pack(side="left", padx=2, pady=6)
 
-        bar2 = ctk.CTkFrame(self.t_img)
-        bar2.pack(fill="x", padx=6)
-        ctk.CTkLabel(bar2, text="通道:").pack(side="left", padx=(3, 2))
-        self.img_channel = ctk.CTkOptionMenu(
-            bar2, width=110,
+        analysis = theme.toolbar(self.t_img)
+        analysis.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(analysis, text="通道", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(12, 4))
+        self.img_channel = theme.option_menu(
+            analysis, width=112,
             values=["正常", "R 红", "G 绿", "B 蓝", "A 透明", "灰度", "位平面R", "位平面G", "位平面B"],
             command=lambda _=None: self.img_render())
-        self.img_channel.pack(side="left", padx=2)
-        ctk.CTkButton(bar2, text="直方图", width=64, command=self.img_histogram).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="EXIF", width=60, command=self.img_exif).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="条码/二维码", width=92, command=self.img_barcode).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="LSB彩图", width=78, command=lambda: self.img_lsb_quick("combo")).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="随机色图", width=78, command=lambda: self.img_lsb_quick("random")).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="另存/转换", width=80, command=self.img_saveas).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="导出GIF全部帧", width=110, command=self.img_gif_export).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="送隐写分析", width=90, command=self.img_analyze).pack(side="left", padx=3)
+        self.img_channel.pack(side="left", pady=6)
+        for text, cmd, width, kind in (
+                ("直方图", self.img_histogram, 66, "subtle"), ("EXIF", self.img_exif, 62, "subtle"),
+                ("条码/二维码", self.img_barcode, 94, "subtle"),
+                ("LSB 彩图", lambda: self.img_lsb_quick("combo"), 78, "subtle"),
+                ("随机色图", lambda: self.img_lsb_quick("random"), 78, "subtle"),
+                ("另存 / 转换", self.img_saveas, 84, "subtle"),
+                ("导出 GIF 全部帧", self.img_gif_export, 114, "ghost"),
+                ("送隐写分析", self.img_analyze, 94, "primary")):
+            theme.button(analysis, text, kind, width=width, height=28,
+                         command=cmd).pack(side="left", padx=3, pady=6)
 
         # 调节滑块
-        bar3 = ctk.CTkFrame(self.t_img)
-        bar3.pack(fill="x", padx=6, pady=(4, 0))
+        bar3 = theme.panel(self.t_img)
+        bar3.pack(fill="x", padx=10, pady=(0, 2))
         self.img_bri = self._slider(bar3, "亮度", 0, self.img_render, default=1.0, span=(0.2, 2.0))
         self.img_con = self._slider(bar3, "对比", 1, self.img_render, default=1.0, span=(0.2, 2.0))
         self.img_sat = self._slider(bar3, "饱和", 2, self.img_render, default=1.0, span=(0.0, 2.0))
         self.img_gam = self._slider(bar3, "伽马", 3, self.img_render, default=1.0, span=(0.2, 3.0))
 
-        body = ctk.CTkFrame(self.t_img)
-        body.pack(fill="both", expand=True, padx=6, pady=4)
-        self.img_canvas = tk.Canvas(body, bg="#222222", highlightthickness=0)
-        vsb = ctk.CTkScrollbar(body, orientation="vertical", command=self.img_canvas.yview)
-        hsb = ctk.CTkScrollbar(body, orientation="horizontal", command=self.img_canvas.xview)
+        body = theme.card(self.t_img)
+        body.pack(fill="both", expand=True, padx=8, pady=(4, 6))
+        self.img_canvas = tk.Canvas(body, bg=theme.BG_EDITOR, highlightthickness=0)
+        vsb = ctk.CTkScrollbar(body, orientation="vertical", command=self.img_canvas.yview,
+                               button_color=theme.BORDER, button_hover_color=theme.BG_SURFACE_3)
+        hsb = ctk.CTkScrollbar(body, orientation="horizontal", command=self.img_canvas.xview,
+                               button_color=theme.BORDER, button_hover_color=theme.BG_SURFACE_3)
         self.img_canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self.img_canvas.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
+        vsb.grid(row=0, column=1, sticky="ns", padx=(0, 2), pady=2)
+        hsb.grid(row=1, column=0, sticky="ew", padx=2)
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
         self.img_canvas.bind("<MouseWheel>", lambda e: self.img_canvas.yview_scroll(int(-e.delta / 120), "units"))
         self.img_canvas.bind("<Configure>", lambda e: self._img_on_configure())
 
-        self.img_status = ctk.CTkLabel(self.t_img, text="未打开图片", anchor="w")
-        self.img_status.pack(fill="x", padx=8, pady=(0, 4))
+        self.img_status = ctk.CTkLabel(self.t_img, text="未打开图片", anchor="w",
+                                       font=theme.font(theme.FONT_SMALL), text_color=theme.TEXT_MUTE)
+        self.img_status.pack(fill="x", padx=12, pady=(0, 4))
 
         # GIF 帧条
-        self.gif_bar = ctk.CTkFrame(self.t_img)
+        self.gif_bar = theme.toolbar(self.t_img)
         self.gif_idx = 0
-        ctk.CTkButton(self.gif_bar, text="◀上一帧", width=80, command=lambda: self.img_gif_step(-1)).pack(side="left", padx=3)
-        self.gif_label = ctk.CTkLabel(self.gif_bar, text="0/0")
+        theme.button(self.gif_bar, "◀ 上一帧", "ghost", width=84, height=26,
+                     command=lambda: self.img_gif_step(-1)).pack(side="left", padx=(10, 3), pady=4)
+        self.gif_label = ctk.CTkLabel(self.gif_bar, text="0/0", font=theme.font(theme.FONT_SMALL),
+                                      text_color=theme.TEXT_DIM)
         self.gif_label.pack(side="left", padx=6)
-        ctk.CTkButton(self.gif_bar, text="下一帧▶", width=80, command=lambda: self.img_gif_step(1)).pack(side="left", padx=3)
+        theme.button(self.gif_bar, "下一帧 ▶", "ghost", width=84, height=26,
+                     command=lambda: self.img_gif_step(1)).pack(side="left", padx=3)
         self.gif_playing = False
-        self.gif_play_btn = ctk.CTkButton(self.gif_bar, text="播放GIF", width=80, command=self.img_gif_play)
+        self.gif_play_btn = theme.button(self.gif_bar, "播放 GIF", "subtle", width=84, height=26,
+                                         command=self.img_gif_play)
         self.gif_play_btn.pack(side="left", padx=3)
         self.gif_bar.pack_forget()
 
@@ -165,14 +177,18 @@ class MediaFrame(ctk.CTkFrame):
         self._img_photo = None
 
     def _slider(self, parent, name, idx, callback, default=1.0, span=(0.0, 2.0)):
-        ctk.CTkLabel(parent, text=name).pack(side="left", padx=(8 if idx == 0 else 4, 2))
+        ctk.CTkLabel(parent, text=name, font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(12 if idx == 0 else 6, 3))
         var = tk.DoubleVar(value=default)
 
         def on(v):
             callback()
 
-        s = ctk.CTkSlider(parent, from_=span[0], to=span[1], variable=var, width=110, command=on)
-        s.pack(side="left")
+        s = ctk.CTkSlider(parent, from_=span[0], to=span[1], variable=var, width=110, command=on,
+                          bg_color="transparent", fg_color=theme.BG_SURFACE_3,
+                          progress_color=theme.ACCENT, button_color=theme.ACCENT,
+                          button_hover_color=theme.ACCENT_HOVER, height=16)
+        s.pack(side="left", pady=6)
         return var
 
     # ---------- 图片：打开/渲染 ----------
@@ -464,61 +480,77 @@ class MediaFrame(ctk.CTkFrame):
     # 视频播放器
     # ======================================================================
     def _build_video(self):
-        bar = ctk.CTkFrame(self.t_vid)
-        bar.pack(fill="x", padx=6, pady=4)
-        ctk.CTkButton(bar, text="打开视频", width=80, command=self.vid_open).pack(side="left", padx=3, pady=4)
-        self.vid_play_btn = ctk.CTkButton(bar, text="▶播放", width=70, command=self.vid_toggle)
-        self.vid_play_btn.pack(side="left", padx=3)
-        ctk.CTkButton(bar, text="■停止", width=60, command=self.vid_stop).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="⏮帧", width=48, command=lambda: self.vid_step(-1)).pack(side="left", padx=1)
-        ctk.CTkButton(bar, text="帧⏭", width=48, command=lambda: self.vid_step(1)).pack(side="left", padx=1)
-        ctk.CTkButton(bar, text="-1s", width=48, command=lambda: self.vid_jump(-1)).pack(side="left", padx=1)
-        ctk.CTkButton(bar, text="+1s", width=48, command=lambda: self.vid_jump(1)).pack(side="left", padx=1)
-        ctk.CTkButton(bar, text="-10s", width=52, command=lambda: self.vid_jump(-10)).pack(side="left", padx=1)
-        ctk.CTkButton(bar, text="+10s", width=52, command=lambda: self.vid_jump(10)).pack(side="left", padx=1)
-        ctk.CTkLabel(bar, text="倍速").pack(side="left", padx=(8, 2))
-        self.vid_speed = ctk.CTkOptionMenu(bar, width=80, values=["0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "4.0"],
+        bar = theme.toolbar(self.t_vid)
+        bar.pack(fill="x", padx=8, pady=(10, 6))
+        theme.button(bar, "打开视频", "subtle", width=88, height=28,
+                     command=self.vid_open).pack(side="left", padx=(10, 3), pady=6)
+        self.vid_play_btn = theme.button(bar, "▶ 播放", "primary", width=78, height=28,
+                                         command=self.vid_toggle)
+        self.vid_play_btn.pack(side="left", padx=3, pady=6)
+        theme.button(bar, "■ 停止", "ghost", width=64, height=28,
+                     command=self.vid_stop).pack(side="left", padx=2, pady=6)
+        for text, cmd, width in (("⏮ 帧", lambda: self.vid_step(-1), 54), ("帧 ⏭", lambda: self.vid_step(1), 54),
+                                 ("-1s", lambda: self.vid_jump(-1), 50), ("+1s", lambda: self.vid_jump(1), 50),
+                                 ("-10s", lambda: self.vid_jump(-10), 56), ("+10s", lambda: self.vid_jump(10), 56)):
+            theme.button(bar, text, "ghost", width=width, height=28,
+                         command=cmd).pack(side="left", padx=2, pady=6)
+        ctk.CTkLabel(bar, text="倍速", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(10, 3))
+        self.vid_speed = theme.option_menu(bar, width=82,
+                                           values=["0.25", "0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "4.0"],
                                            command=lambda _=None: None)
         self.vid_speed.set("1.0")
-        self.vid_speed.pack(side="left")
-        self.vid_loop = ctk.CTkSwitch(bar, text="循环")
+        self.vid_speed.pack(side="left", pady=6)
+        self.vid_loop = theme.switch(bar, "循环")
         self.vid_loop.pack(side="left", padx=8)
-        ctk.CTkLabel(bar, text="画面").pack(side="left", padx=(6, 2))
-        self.vid_rot = ctk.CTkOptionMenu(bar, width=80, values=["0°", "90°", "180°", "270°"],
+        ctk.CTkLabel(bar, text="画面", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(6, 3))
+        self.vid_rot = theme.option_menu(bar, width=82, values=["0°", "90°", "180°", "270°"],
                                          command=lambda _=None: self.vid_show_frame())
-        self.vid_rot.pack(side="left")
-        self.vid_gray = ctk.CTkSwitch(bar, text="灰度", command=lambda: self.vid_show_frame())
+        self.vid_rot.pack(side="left", pady=6)
+        self.vid_gray = theme.switch(bar, "灰度", command=lambda: self.vid_show_frame())
         self.vid_gray.pack(side="left", padx=8)
 
-        bar2 = ctk.CTkFrame(self.t_vid)
-        bar2.pack(fill="x", padx=6)
-        ctk.CTkButton(bar2, text="截图当前帧", width=90, command=self.vid_snapshot).pack(side="left", padx=3, pady=4)
-        ctk.CTkButton(bar2, text="抽帧(到软件目录)", width=130, command=self.vid_extract_frames).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="提取音频", width=80, command=self.vid_extract_audio).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="导出GIF", width=80, command=self.vid_export_gif).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="带声音播放(ffplay)", width=140, command=self.vid_ffplay).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="当前帧送分析", width=110, command=self.vid_frame_analyze).pack(side="left", padx=3)
-        ctk.CTkButton(bar2, text="打开导出目录", width=110,
-                      command=lambda: os.startfile(EXPORTS_DIR)).pack(side="left", padx=3)
-        ctk.CTkLabel(bar2, text="音量(ffplay)").pack(side="left", padx=(10, 2))
+        bar2 = theme.toolbar(self.t_vid)
+        bar2.pack(fill="x", padx=8, pady=(0, 6))
+        for i, (text, cmd, width, kind) in enumerate((
+                ("截图当前帧", self.vid_snapshot, 92, "subtle"),
+                ("抽帧（到软件目录）", self.vid_extract_frames, 132, "subtle"),
+                ("提取音频", self.vid_extract_audio, 82, "subtle"),
+                ("导出 GIF", self.vid_export_gif, 82, "subtle"),
+                ("带声音播放（ffplay）", self.vid_ffplay, 142, "primary"),
+                ("当前帧送分析", self.vid_frame_analyze, 112, "subtle"),
+                ("打开导出目录", lambda: os.startfile(EXPORTS_DIR), 112, "ghost"))):
+            theme.button(bar2, text, kind, width=width, height=28,
+                         command=cmd).pack(side="left", padx=(10 if i == 0 else 3, 0), pady=6)
+        ctk.CTkLabel(bar2, text="音量(ffplay)", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(10, 3))
         self.vid_vol = tk.IntVar(value=80)
-        ctk.CTkSlider(bar2, from_=0, to=100, variable=self.vid_vol, width=100).pack(side="left")
+        ctk.CTkSlider(bar2, from_=0, to=100, variable=self.vid_vol, width=100, height=16,
+                      fg_color=theme.BG_SURFACE_3, progress_color=theme.ACCENT,
+                      button_color=theme.ACCENT, button_hover_color=theme.ACCENT_HOVER).pack(
+            side="left", pady=6)
 
-        stage = ctk.CTkFrame(self.t_vid, fg_color="#111")
-        stage.pack(fill="both", expand=True, padx=6, pady=4)
-        self.vid_label = ctk.CTkLabel(stage, text="打开视频后在此逐帧播放（内置播放器为无声分析画面；带声音点 ffplay）",
-                                      text_color="#888")
-        self.vid_label.pack(fill="both", expand=True)
+        stage = theme.card(self.t_vid)
+        stage.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        self.vid_label = ctk.CTkLabel(stage, text_color=theme.TEXT_MUTE,
+                                      font=theme.font(theme.FONT_SMALL),
+                                      text="打开视频后在此逐帧播放（内置播放器为无声分析画面；带声音点 ffplay）")
+        self.vid_label.pack(fill="both", expand=True, pady=12)
         self._vid_photo = None
 
-        ctl = ctk.CTkFrame(self.t_vid)
-        ctl.pack(fill="x", padx=6)
-        self.vid_time = ctk.CTkLabel(ctl, text="00:00 / 00:00", width=150)
+        ctl = theme.panel(self.t_vid)
+        ctl.pack(fill="x", padx=10)
+        self.vid_time = ctk.CTkLabel(ctl, text="00:00 / 00:00", width=150,
+                                     font=theme.mono(11), text_color=theme.TEXT_DIM)
         self.vid_time.pack(side="left", padx=4)
-        self.vid_seek = ctk.CTkSlider(ctl, from_=0, to=1000, command=self.vid_seek)
-        self.vid_seek.pack(side="left", fill="x", expand=True, padx=6)
-        self.vid_status = ctk.CTkLabel(self.t_vid, text="就绪", anchor="w")
-        self.vid_status.pack(fill="x", padx=8, pady=(0, 4))
+        self.vid_seek = ctk.CTkSlider(ctl, from_=0, to=1000, command=self.vid_seek, height=16,
+                                      fg_color=theme.BG_SURFACE_3, progress_color=theme.ACCENT,
+                                      button_color=theme.ACCENT, button_hover_color=theme.ACCENT_HOVER)
+        self.vid_seek.pack(side="left", fill="x", expand=True, padx=6, pady=4)
+        self.vid_status = ctk.CTkLabel(self.t_vid, text="就绪", anchor="w",
+                                       font=theme.font(theme.FONT_SMALL), text_color=theme.TEXT_MUTE)
+        self.vid_status.pack(fill="x", padx=12, pady=(0, 6))
 
         self.vid_cap = None
         self.vid_path = None
@@ -841,37 +873,46 @@ class MediaFrame(ctk.CTkFrame):
     # 音频隐写工作台
     # ======================================================================
     def _build_audio(self):
-        bar = ctk.CTkFrame(self.t_aud)
-        bar.pack(fill="x", padx=6, pady=4)
-        ctk.CTkButton(bar, text="打开音频", width=80, command=self.aud_open).pack(side="left", padx=3, pady=4)
-        ctk.CTkButton(bar, text="完整隐写分析", width=110, command=self.aud_analyze).pack(side="left", padx=3)
-        ctk.CTkButton(bar, text="播放(ffplay)", width=100, command=self.aud_play).pack(side="left", padx=3)
-        ctk.CTkButton(bar, text="打开输出目录", width=110,
-                      command=lambda: os.path.isdir(self.aud_outdir) and os.startfile(self.aud_outdir)).pack(side="left", padx=3)
+        bar = theme.toolbar(self.t_aud)
+        bar.pack(fill="x", padx=8, pady=(10, 6))
+        theme.button(bar, "打开音频", "subtle", width=88, height=28,
+                     command=self.aud_open).pack(side="left", padx=(10, 3), pady=6)
+        theme.button(bar, "完整隐写分析", "primary", width=116, height=28,
+                     command=self.aud_analyze).pack(side="left", padx=3, pady=6)
+        theme.button(bar, "播放（ffplay）", "subtle", width=104, height=28,
+                     command=self.aud_play).pack(side="left", padx=3, pady=6)
+        theme.button(bar, "打开输出目录", "ghost", width=112, height=28,
+                     command=lambda: os.path.isdir(self.aud_outdir) and os.startfile(self.aud_outdir)).pack(
+            side="left", padx=3, pady=6)
 
-        bar2 = ctk.CTkFrame(self.t_aud)
-        bar2.pack(fill="x", padx=6)
-        ctk.CTkLabel(bar2, text="查看图:").pack(side="left", padx=(4, 2))
-        ctk.CTkButton(bar2, text="全频语谱图", width=96, command=lambda: self.aud_show("audio_spectrogram.png")).pack(side="left", padx=2, pady=4)
-        ctk.CTkButton(bar2, text="低频放大", width=80, command=lambda: self.aud_show("audio_spectrogram_low.png")).pack(side="left", padx=2)
-        ctk.CTkButton(bar2, text="侧声道谱", width=80, command=lambda: self.aud_show("audio_spectrogram_side.png")).pack(side="left", padx=2)
-        ctk.CTkButton(bar2, text="波形图", width=70, command=lambda: self.aud_show("audio_waveform.png")).pack(side="left", padx=2)
-        ctk.CTkButton(bar2, text="反转音频", width=80, command=lambda: self.aud_play_file("audio_reversed.wav")).pack(side="left", padx=2)
-        ctk.CTkButton(bar2, text="侧声道", width=70, command=lambda: self.aud_play_file("audio_side.wav")).pack(side="left", padx=2)
+        bar2 = theme.toolbar(self.t_aud)
+        bar2.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(bar2, text="查看图", font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left", padx=(12, 4))
+        for text, cmd, width in (("全频语谱图", lambda: self.aud_show("audio_spectrogram.png"), 96),
+                                 ("低频放大", lambda: self.aud_show("audio_spectrogram_low.png"), 82),
+                                 ("侧声道谱", lambda: self.aud_show("audio_spectrogram_side.png"), 82),
+                                 ("波形图", lambda: self.aud_show("audio_waveform.png"), 72),
+                                 ("反转音频", lambda: self.aud_play_file("audio_reversed.wav"), 82),
+                                 ("侧声道", lambda: self.aud_play_file("audio_side.wav"), 72)):
+            theme.button(bar2, text, "ghost", width=width, height=28,
+                         command=cmd).pack(side="left", padx=3, pady=6)
 
-        stage = ctk.CTkFrame(self.t_aud, fg_color="#111")
-        stage.pack(fill="both", expand=True, padx=6, pady=4)
-        self.aud_label = ctk.CTkLabel(stage, text="打开 WAV/MP3/FLAC/OGG/M4A 等音频后，点“完整隐写分析”，语谱图在此显示",
-                                      text_color="#888")
-        self.aud_label.pack(fill="both", expand=True)
+        stage = theme.card(self.t_aud)
+        stage.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        self.aud_label = ctk.CTkLabel(stage, text_color=theme.TEXT_MUTE,
+                                      font=theme.font(theme.FONT_SMALL),
+                                      text="打开 WAV/MP3/FLAC/OGG/M4A 等音频后，点“完整隐写分析”，语谱图在此显示")
+        self.aud_label.pack(fill="both", expand=True, pady=12)
         self._aud_photo = None
         self.aud_path = None
         self.aud_outdir = os.path.join(EXPORTS_DIR, "audio")
         os.makedirs(self.aud_outdir, exist_ok=True)
-        self.aud_status = ctk.CTkLabel(self.t_aud, text="就绪", anchor="w")
-        self.aud_status.pack(fill="x", padx=8, pady=(0, 2))
-        self.aud_box = ctk.CTkTextbox(self.t_aud, height=170, font=ctk.CTkFont(family="Consolas", size=12))
-        self.aud_box.pack(fill="x", padx=6, pady=(0, 6))
+        self.aud_status = ctk.CTkLabel(self.t_aud, text="就绪", anchor="w",
+                                       font=theme.font(theme.FONT_SMALL), text_color=theme.TEXT_MUTE)
+        self.aud_status.pack(fill="x", padx=12, pady=(0, 2))
+        self.aud_box = theme.textbox(self.t_aud, mono_font=True, size=12, height=170)
+        self.aud_box.pack(fill="x", padx=8, pady=(0, 10))
 
     def aud_open(self, path=None):
         if not path:
@@ -969,8 +1010,9 @@ class MediaFrame(ctk.CTkFrame):
         win = ctk.CTkToplevel(self)
         win.title(f"{kind}隐写分析 - {os.path.basename(path)}")
         win.geometry("760x560")
-        box = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=12))
-        box.pack(fill="both", expand=True, padx=8, pady=8)
+        theme.apply_root(win)
+        box = theme.textbox(win, mono_font=True, size=12)
+        box.pack(fill="both", expand=True, padx=12, pady=12)
         box.insert("1.0", "分析中，请稍候…\n")
 
         def work():
@@ -1001,6 +1043,7 @@ class MediaFrame(ctk.CTkFrame):
         win = ctk.CTkToplevel(self)
         win.title(title)
         win.geometry("560x420")
-        box = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=12))
-        box.pack(fill="both", expand=True, padx=8, pady=8)
+        theme.apply_root(win)
+        box = theme.textbox(win, mono_font=True, size=12)
+        box.pack(fill="both", expand=True, padx=12, pady=12)
         box.insert("1.0", text)
