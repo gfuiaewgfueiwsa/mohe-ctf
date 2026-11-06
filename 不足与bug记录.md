@@ -387,3 +387,56 @@
     失败时只记录 200 不落地，不继续重试。
 
 13.7 **`.DS_Store`/vim 交换文件解析是轻量实现**：只抽可打印串，不做完整 Bud1 结构解析；文件名带空格或路径的会被跳过。
+
+## 十四、Web 自动化实题打磨（2026-11-07，build14）
+
+### 14.1 soft-404 把“200 错误页”当成备份文件
+
+CTFHub 靶场对不存在的路径也回 `200`，且永远是同一张 3110 字节错误页。旧版备份名表逐个回读，
+24 条发现里 20 条都是假的。修复：`Ctx.is_soft()` 先随机请求一个不存在路径拿基线，正文完全相同、
+或长度差 ≤2 且前 120 字符相同即判 soft-404；`flag_hunt`、`backup_hunt`、`dir_crawl` 统一走这个判断。
+修复后 RCE 题的发现数从 24 条降到 1 条（cmdi 本身）。
+
+### 14.2 空白首页没有参数可测，SSRF/伪协议题整类跳过
+
+CTFHub 的 SSRF 与伪协议题首页是空 body、无表单、无查询串，旧版 `build_targets` 返回 0 个参数，
+整个矩阵空转（35 次请求、0 发现）。修复：`guess_targets()` 按 `url/u/uri/link/src/target/redirect/next/
+image/img/file/path/load/host/ip/domain/site/page/to/out` 逐个探，探针为 `file:///etc/passwd`、
+`http://127.0.0.1/flag.php`、`1`；响应出现 `root:`/flag、状态或长度变化即视为有效参数。
+踩坑：`_replace_param` 从 `webauto` 导入，对没有查询串的 URL 直接返回原 URL（pairs 为空），
+必须换成自写的 `_set_param()`——有同名就替换，没有就追加。
+
+### 14.3 命令注入命中后只验证不取 flag
+
+`test_cmdi` 用算术回显确认 shell 执行后就 return，flag 仍要靠人。修复：`cmdi_read_flag()` 依次跑
+`;cat /flag`、`;ls -la /var/www/html`、`;find /var/www`、`;grep -rhoE 'ctfhub{...}' /var/www /home`，
+对目录里出现的 `.php` 再 `cat`/`base64` 回读，并对回显里的 base64 串解一层再扫 flag。
+该题 flag 实际在 `/var/www/html/48432200125877.php`（42 字节，内容只有一行注释），
+根目录完全没有 flag 文件，按常规路径必然取不到。
+
+### 14.4 show_source 把整页源码打进回显，干扰判断
+
+命令注入题页面尾部 `show_source(__FILE__)`，源码被 `htmlspecialchars` 转义后整段打印，
+`&lt;?php ... ?&gt;` 里的字符串会被误当成命令回显。修复：`_cmdi_block()` 只取 `Array` 到
+`&lt;?php` / `</pre>` 之间；`_add_flag` 的花括号校验也基于这个区块，避免源码噪声。
+
+### 14.5 报错注入 updatexml 只回 32 字符，拼接会重复
+
+`updatexml` 的 XPATH 报错最多显示约 32 字符。第一版把“截断的整段”和后续 `substr` 片段直接相加，
+得到 `ctfhub{...c8ff'ctfhub{...'857c8ff}` 这种脏串。修复：从 offset=1 开始每次 24 字符分片，
+只拼分片结果，出现 `}` 即停；片段统一过 `[A-Za-z0-9_{}-]` 白名单，剥掉 SQL 引号与 HTML 尾巴。
+实测 55 次请求、27 秒拿到 `ctfhub{9aade4b1a9c76437cabbe063}`，判题正确。
+
+### 14.6 注入矩阵吃掉预算，上传矩阵跑不完
+
+新增盲探与取 flag 请求后，380 次预算在本地回归靶站被注入矩阵耗尽，上传只跑了 1 种载荷。
+修复：`campaign` 顺序改为「flag_hunt → test_upload → 注入矩阵 → dir_crawl → backup_hunt」，
+便宜的直读与上传先跑；回归恢复 21/21。
+
+### 14.7 仍未自动化（明确边界）
+
+- **布尔/时间盲注取数**：只判断成立，不做二分跑字符；需 `sqlmap --technique=B/T` 或人工脚本。
+- **XSS**：只能确认反射与是否转义；存储型、DOM 型、需要浏览器弹窗验证的题仍要人看页面。
+- **二次注入 / 过滤绕过（过滤 cat、空格、目录分隔符、运算符）**：矩阵未覆盖全部变形。
+- **Pwn**：偏移仍要实测；只有 ret2win，ret2libc/格式化串/堆题未自动化；Windows 无法执行 ELF。
+- **逆向**：字符串/符号/r2 摘录/pyc/UPX 之外，没有 z3 约束求解与 angr 符号执行。
