@@ -336,7 +336,7 @@ if __name__ == "__main__":
                     fp.write(traceback.format_exc())
                 from tkinter import Tk, messagebox
                 r = Tk(); r.withdraw()
-                messagebox.showerror("CTFToolbox 启动失败",
+                messagebox.showerror("魔盒-ctf 启动失败",
                                      "启动出错，详情见 workspace/crash.log\n\n" + traceback.format_exc()[-800:])
             except Exception:
                 raise

@@ -60,7 +60,7 @@ def http_probe(url: str, log=print):
         url = "http://" + url
     try:
         r = requests.get(url, timeout=10, verify=False, allow_redirects=True,
-                         headers={"User-Agent": "Mozilla/5.0 CTFToolbox"})
+                         headers={"User-Agent": "Mozilla/5.0 魔盒-ctf"})
         title = ""
         m = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.I | re.S)
         if m:
@@ -164,7 +164,7 @@ def dir_scan(url: str, log=print, workers=20, extra_words=None):
         u = base + "/" + word.lstrip("/")
         try:
             r = requests.get(u, timeout=8, verify=False,
-                             headers={"User-Agent": "Mozilla/5.0 CTFToolbox"}, allow_redirects=False)
+                             headers={"User-Agent": "Mozilla/5.0 魔盒-ctf"}, allow_redirects=False)
             if r.status_code in (200, 301, 302, 401, 403):
                 return r.status_code, u, len(r.content)
         except Exception:
@@ -189,7 +189,7 @@ def sqlmap_run(url: str, log=print, extra=None):
     from .common import external_python
     py = external_python()
     if not py:
-        log("[!] 打包环境运行 sqlmap 需要系统安装 Python（python.org），或使用源码版 CTFToolbox")
+        log("[!] 打包环境运行 sqlmap 需要系统安装 Python（python.org），或使用源码版 魔盒-ctf")
         return
     args = [py, sm, "-u", url, "--batch", "--random-agent",
             "--level", "2", "--risk", "1"]

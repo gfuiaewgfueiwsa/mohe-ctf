@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""离线网页工具镜像脚本（由 CTFToolbox「网页导航 → 重新镜像离线网页」按钮调用）。
+"""离线网页工具镜像脚本（由 魔盒-ctf「网页导航 → 重新镜像离线网页」按钮调用）。
 
 功能：把 CyberChef、兽音/熊曰/佛论禅、零宽字符、QRazyBox 等纯前端工具
 镜像到 tools/portable/webtools/，断网可用，并生成 manifest.json。

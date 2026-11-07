@@ -30,7 +30,7 @@
 
 ```
 main.py                 启动入口（GUI / --cli / --rac）
-魔盒-ctf.spec         PyInstaller 打包配置
+CTFToolbox.spec       PyInstaller 打包配置（输出名 CTFToolbox.exe）
 build.bat               一键打包脚本
 version_info.txt        Windows 版本资源信息
 _mirror_webtools.py     内置 Web 工具导航数据生成
@@ -41,7 +41,7 @@ samples/                示例输入
 
 ## 依赖
 
-GUI 基于 `customtkinter`。打包依赖见 `魔盒-ctf.spec` 中显式收集列表：
+GUI 基于 `customtkinter`。打包依赖见 `CTFToolbox.spec` 中显式收集列表：
 `customtkinter`、`scapy`、`capstone`、`pyelftools`、`pefile`、`windnd`、`opencv-python`、`pillow`、`paramiko`、`pycryptodome`、`cryptography`、`numpy`、`qrcode`、`gmssl`、`registry`、`evtx`。
 运行环境为 Windows + Python 3.13。
 
@@ -49,7 +49,7 @@ GUI 基于 `customtkinter`。打包依赖见 `魔盒-ctf.spec` 中显式收集�
 
 1. 安装上述依赖与 `pyinstaller`（`build.bat` 默认使用 `D:\PY\python.exe`，按需改为你的解释器路径）。
 2. 准备 `tools/portable` 与 `tools/runtime`（Ghidra、jadx、ffmpeg、JDK、Node、独立 Python 等）。
-3. 执行 `build.bat`，产物在 `dist/魔盒-ctf/魔盒-ctf.exe`，同时把 `_internal` 下的数据目录与 `使用说明.md`、`卸载魔盒-ctf.bat` 一并整理到 exe 同级。
+3. 执行 `build.bat`，产物在 `dist/CTFToolbox/CTFToolbox.exe`，同时把 `_internal` 下的数据目录与 `使用说明.md`、`卸载魔盒-ctf.bat` 一并整理到 exe 同级。
 
 ## 未随仓库发布的内容
 

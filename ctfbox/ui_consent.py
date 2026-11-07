@@ -4,7 +4,7 @@ try:
     from . import ui_theme as theme
 except Exception:      # 极端情况（customtkinter 缺失）下仍要能弹出确认窗
     class _FallbackTheme:
-        APP_NAME = "CTFToolbox"
+        APP_NAME = "魔盒-ctf"
         APP_VERSION = "v2.5"
         BG_WINDOW = "#0d1117"
         BG_SURFACE = "#151b24"
@@ -31,7 +31,7 @@ except Exception:      # 极端情况（customtkinter 缺失）下仍要能弹�
     theme = _FallbackTheme()
 
 
-USAGE_TEXT = """CTFToolbox 使用说明
+USAGE_TEXT = """魔盒-ctf 使用说明
 
 一、使用范围
 本软件仅用于 CTF 比赛中已获明确授权的题目和靶机。每次启动均需主动勾选确认；关闭或拒绝即退出。确认不等于获得目标授权，不得测试未授权网站。
@@ -158,11 +158,11 @@ class ConsentDialog(tk.Tk):
             return
         from tkinter.scrolledtext import ScrolledText
         window = self.usage_window = tk.Toplevel(self)
-        window.title("CTFToolbox 使用说明")
+        window.title("魔盒-ctf 使用说明")
         window.geometry("860x640")
         window.transient(self)
         window.configure(bg=theme.BG_WINDOW)
-        tk.Label(window, text="CTFToolbox 使用说明", font=(theme.ui_family_safe(), 14, "bold"),
+        tk.Label(window, text="魔盒-ctf 使用说明", font=(theme.ui_family_safe(), 14, "bold"),
                  bg=theme.BG_WINDOW, fg=theme.TEXT).pack(anchor="w", padx=16, pady=(14, 6))
         text = ScrolledText(window, wrap="word", font=(theme.ui_family_safe(), 11),
                             bg=theme.BG_EDITOR, fg=theme.TEXT, insertbackground=theme.TEXT,

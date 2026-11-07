@@ -482,7 +482,7 @@ def _http_get(url, cancel_event, deadline, capture=False):
             target = urlunsplit(("", "", parts.path or "/", parts.query, ""))
             started_utc = datetime.now(timezone.utc).isoformat()
             started_at = time.monotonic()
-            connection.request("GET", target, headers={"User-Agent": "CTFToolbox-CTFWorkflow/1.0",
+            connection.request("GET", target, headers={"User-Agent": "魔盒-ctf-CTFWorkflow/1.0",
                                                        "Accept-Encoding": "identity", "Connection": "close"})
             # getresponse() detaches connection.sock for Connection: close.
             # Keep the transport so cancellation can still interrupt body reads.
@@ -590,7 +590,7 @@ def _save_har(item, run_id):
     os.makedirs(REPORTS_DIR, exist_ok=True)
     path = os.path.abspath(os.path.join(REPORTS_DIR, "web_workflow_" + run_id + ".har"))
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump({"log": {"version": "1.2", "creator": {"name": "CTFToolbox", "version": "1.0"},
+        json.dump({"log": {"version": "1.2", "creator": {"name": "魔盒-ctf", "version": "1.0"},
                            "entries": [entry], "comment": _HAR_WARNING}},
                   handle, ensure_ascii=False, indent=2)
     return path

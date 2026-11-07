@@ -81,7 +81,7 @@ def install():
             except Exception:
                 pass
             messagebox.showerror(
-                "CTFToolbox 出错",
+                "魔盒-ctf 出错",
                 f"发生未捕获异常，详情已记录到：\n{LOG_PATH or 'workspace/crash.log'}\n\n"
                 f"{etype.__name__}: {str(value)[:600]}")
         except Exception:

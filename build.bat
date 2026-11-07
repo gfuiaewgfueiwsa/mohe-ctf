@@ -1,6 +1,6 @@
 @echo off
 cd /d %~dp0
-echo ====== CTFToolbox build start ======
+echo ====== 魔盒-ctf build start ======
 REM 关闭正在运行的旧实例，避免 --clean 删除 dist 时 crash.log 等文件被占用(WinError 5/32)
 taskkill /F /IM CTFToolbox.exe >nul 2>&1
 D:\PY\python.exe -m PyInstaller --noconfirm --clean CTFToolbox.spec
@@ -17,7 +17,7 @@ robocopy tools "%D%\tools" /E /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 goto fail
 
 copy /Y 使用说明.md "%D%\使用说明.md" >nul
-copy /Y 卸载CTFToolbox.bat "%D%\卸载CTFToolbox.bat" >nul
+copy /Y 卸载魔盒-ctf.bat "%D%\卸载魔盒-ctf.bat" >nul
 if not exist "%D%\workspace" mkdir "%D%\workspace"
 if not exist "%D%\reports"   mkdir "%D%\reports"
 if not exist "%D%\exports"   mkdir "%D%\exports"
