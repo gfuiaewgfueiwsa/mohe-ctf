@@ -54,6 +54,9 @@ def wait_server(proc, timeout=6.0):
 
 
 def main():
+    # 请求日志由靶站追加写入，先清空，避免上一轮残留影响 multipart 计数等断言
+    with open(LOG, "w", encoding="utf-8"):
+        pass
     proc = subprocess.Popen([sys.executable, TARGET, str(PORT), LOG],
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:

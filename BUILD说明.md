@@ -40,6 +40,15 @@ build.bat
 - 成品 exe 版本 2.5.0.0（PE 资源），界面版本 `v2.5`，2026-11-07 构建并验证（Web 回归 21 PASS / 0 FAIL / 0 SKIP，Pwn 本地闭环 `PWN_SMOKE=PASS`）。
 - 源码与成品均已同步到 GitHub `gfuiaewgfueiwsa/mohe-ctf`。
 
+## 运行测试
+
+```
+D:\PY\python.exe tests\test_webattack.py    # 端到端 Web 深度测试（21 项断言）
+D:\PY\python.exe tests\test_pwn_ret2win.py  # Pwn 本地闭环（PWN_SMOKE=PASS）
+```
+
+Web 测试会拉起 `tests\ctf_deeptarget.py` 监听 `127.0.0.1:18081`，只打本机回环，不涉及外部目标。
+
 ## 不要放进来的东西
 
 `Polar 靶场题解.md` 含真实题目 flag、靶场地址与账号，只留在工作目录根层，不进源码包也不进成品，更不要推到公开仓库。

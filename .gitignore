@@ -7,3 +7,5 @@ reports/
 samples/exports/
 __pycache__/
 *.pyc
+# Web 回归测试的靶站请求日志（运行时生成）
+tests/deeptarget_requests.log
