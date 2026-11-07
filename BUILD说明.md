@@ -1,31 +1,38 @@
-# 源码包说明（v2.5）
+# 源码包与打包说明（v3.7.0）
 
-这是 `魔盒-ctf` v2.5 成品的源码归档，保留下来是为了以后还能改代码、重新打包。成品本身在上一级目录 `..\魔盒-ctf\`。
+本目录是 `魔盒-ctf` v3.7.0 的源码，可直接运行、测试与重新打包。成品在上一级 `..\魔盒-ctf\`。
 
 ## 目录里有什么
 
 | 路径 | 说明 |
 | --- | --- |
-| `ctfbox\` | 核心包：分发器、识别器、各 `modules_*`、界面层、工具管理、`rac\` 自动化引擎 |
-| `main.py` | 入口，负责 GUI / `--cli` / `--rac` / `--webauto` / `--webattack` 模式的分派 |
-| `CTFToolbox.spec` | PyInstaller 打包配置，含 Tcl/Tk 版本锁定（输出名 `CTFToolbox.exe`） |
+| `ctfbox\` | 核心包：分发器、识别器、各 `modules_*`、界面层、工具管理、`web*` 引擎 |
+| `ctfbox\autopilot\` | 一键梭哈编排：首层判型、工作区、scope、sandbox、审计、`exploit\`、确定性工具与 WP 输出 |
+| `ctfbox\competition\` | 赛事专项：内存取证、流量深度、APK 审计、源码审计、安全基线、日志时间线、攻防验证、加固对比 |
+| `ctfbox\platforms\` | 平台闭环：CTFd / PolarCTF 登录、题目、实例与 flag 提交 |
+| `ctfbox\rac\` | RAC 自动化：题目流水线、侦察、SSH 批量执行、Oracle 巡检、RPA 会话 |
+| `main.py` | 入口，负责 GUI / `--cli` / `--auto` / `--rac` / `--webauto` / `--webattack` / `--pwn` / `--platform` / `--comp` 分派 |
+| `CTFToolbox.spec` | PyInstaller 打包配置（输出名 `CTFToolbox.exe`） |
 | `build.bat` | 一键打包脚本，产物落到 `dist\CTFToolbox\` |
-| `version_info.txt` | PE 版本资源（2.5.0.0，中英双 StringTable） |
-| `_mirror_webtools.py` | 离线网页镜像脚本，供界面上的「重新镜像」按钮调用 |
-| `scripts\library\` | 分类脚本库，既是功能素材也是 RAC 的装配源 |
-| `samples\` | 示例输入，打包时随包进 `_internal` 再被脚本挪到 exe 同级 |
-| `.git` | 本地仓库，远端为 GitHub `gfuiaewgfueiwsa/mohe-ctf` |
-| `tools\` | **目录联接（Junction）**，指向 `..\魔盒-ctf\tools`，不是真的 3 GB 副本 |
+| `version_info.txt` | PE 版本资源（3.7.0.0，中英双 StringTable） |
+| `_mirror_webtools.py` | 内置 Web 工具导航数据生成 |
+| `scripts\library\` | 88 个脚本与速查表（69 个 Python 脚本），既是功能素材也是 RAC 装配源 |
+| `tests\` | 单测与本地靶站；全量 95 项 |
+| `docs\` | 当前架构与交付验证记录 |
+| `samples\` | 示例输入占位，打包时随包进 `_internal` 再挪到 exe 同级 |
+| `tools\` | **目录联接（Junction）**，指向 `..\魔盒-ctf\tools`，不是 3 GB 副本 |
 | `卸载魔盒-ctf.bat` | 卸载脚本，打包时复制到 exe 同级 |
 
-## 重新打包前要确认的三件事
+## 打包前要确认的三件事
 
-1. **Python 解释器**：`build.bat` 里写死的是 `D:\PY\python.exe`，换机器前先改成自己的路径。依赖至少要装 `customtkinter scapy capstone pyelftools pefile windnd opencv-python pillow paramiko pycryptodome pycryptodomex cryptography numpy qrcode gmssl python-registry python-evtx pyinstaller`，运行环境是 Python 3.13。
-2. **`tools\` 联接是否还有效**：在资源管理器里双击进得去就说明没断。成品文件夹改名、移动或删除后，联接会失效；此时先删掉这个断链，再把成品里的 `tools` 拷回来，或者重建联接：
+1. **Python 解释器**：`build.bat` 默认使用 `D:\PY\python.exe`，换机器先改成自己的路径。依赖至少包括：
+   `customtkinter scapy capstone pyelftools pefile windnd opencv-python pillow paramiko pycryptodome pycryptodomex cryptography numpy qrcode gmssl python-registry python-evtx pyinstaller`，运行环境为 Windows + Python 3.13。
+2. **`tools\` 联接是否有效**：资源管理器能进就说明正常。成品改名、移动或删除会让联接失效，可重建：
    ```
    mklink /J "tools" "..\魔盒-ctf\tools"
    ```
-3. **没有 exe 在跑**：`build.bat` 开头会 `taskkill` 掉 `CTFToolbox.exe`，但 `workspace\crash.log` 的句柄仍可能占用 `dist`，打包前手动确认一遍更稳。
+   `tools\` 约 3.1 GB，包含 Ghidra、jadx、ffmpeg、JDK、Node、独立 Python、7z、nmap、sqlmap、hashcat、john、radare2、x64dbg、dnSpy 等 25 个便携工具。
+3. **没有 exe 在运行**：`build.bat` 会先 `taskkill /F /IM CTFToolbox.exe`，但 `workspace\crash.log` 句柄仍可能占用 `dist`；打包前手动确认更稳。
 
 ## 打包命令
 
@@ -33,22 +40,41 @@
 build.bat
 ```
 
-等价于 `pyinstaller --noconfirm --clean CTFToolbox.spec`。打完包 `dist\CTFToolbox\` 里会出现 `_internal`，随后脚本把 `tools`、`samples`、`scripts` 从 `_internal` 挪到 exe 同级，再 `robocopy` 整个 `tools` 过去，最后补上 `使用说明.md` 与 `卸载魔盒-ctf.bat`。`robocopy` 退出码 0–7 都算成功，只有 ≥8 才是失败。
+等价于 `pyinstaller --noconfirm --clean CTFToolbox.spec`。完成后 `dist\CTFToolbox\` 内生成 `_internal`，脚本随后：
 
-## 已发布状态
+1. 把 `_internal\tools`、`_internal\samples`、`_internal\scripts` 移到 exe 同级；
+2. `robocopy` 整个 `tools` 到产物目录（退出码 0–7 为成功，≥8 为失败）；
+3. 复制 `使用说明.md` 与 `卸载魔盒-ctf.bat`；
+4. 建立空的 `workspace`、`reports`、`exports` 目录。
 
-- 成品 exe 版本 2.5.0.0（PE 资源），界面版本 `v2.5`，2026-11-07 构建并验证（Web 回归 21 PASS / 0 FAIL / 0 SKIP，Pwn 本地闭环 `PWN_SMOKE=PASS`）。
-- 源码与成品均已同步到 GitHub `gfuiaewgfueiwsa/mohe-ctf`。
+分发时把 `dist\CTFToolbox\` 整体复制为 `魔盒-ctf\`，可执行文件为 `CTFToolbox.exe`，成品目录同时保留一份 `魔盒-ctf.exe` 同名副本。
+
+## 从源码直接运行
+
+```
+D:\PY\python.exe main.py                 # GUI
+D:\PY\python.exe main.py --cli 样本文件   # 批量分析
+D:\PY\python.exe main.py --auto 样本文件  # 一键梭哈
+```
+
+GUI 每次启动展示《软件责任说明》，勾选同意后进入；CLI 首次使用加 `--accept-responsibility`，确认记录写入 `workspace\config\responsibility.json`。
 
 ## 运行测试
 
 ```
-D:\PY\python.exe tests\test_webattack.py    # 端到端 Web 深度测试（21 项断言）
-D:\PY\python.exe tests\test_pwn_ret2win.py  # Pwn 本地闭环（PWN_SMOKE=PASS）
+D:\PY\python.exe -m unittest discover -s tests -v
 ```
 
-Web 测试会拉起 `tests\ctf_deeptarget.py` 监听 `127.0.0.1:18081`，只打本机回环，不涉及外部目标。
+v3.7.0 全量回归 **95 tests OK**。覆盖范围包括：责任闸门、首层判型、AutoPilot 文件/Web 链、Web 利用与审计、加密 ZIP 与密码型隐写、异常曲线 HNP、赛事专项八个模式、平台适配、RAC 装配与脚本库预检。Web 相关用例只拉起 `127.0.0.1` 本地靶站，不访问外部目标。
+
+## 已发布状态
+
+- 成品 `魔盒-ctf.exe` / `CTFToolbox.exe`：PE 版本 **3.7.0.0**，2026-11-08 构建，24,974,643 字节。
+- 全量单测 95 项通过；CLI 责任闸门、平台列表、打包产物冒烟均已实测。
+- 源码、测试与文档同步到 GitHub `gfuiaewgfueiwsa/mohe-ctf`（`tools/`、`dist/`、`workspace/` 不入库）。
 
 ## 不要放进来的东西
 
-`Polar 靶场题解.md` 含真实题目 flag、靶场地址与账号，只留在工作目录根层，不进源码包也不进成品，更不要推到公开仓库。
+- `Polar 靶场题解.md`：含真实题目 flag、靶场地址与账号，只留在工作目录根层，不进源码包、不进成品、不推公开仓库。
+- `tools/`、`dist/`、`build/`、`workspace/`、`reports/`、`tests/_*.log` 等运行与构建产物。
+- 平台登录态 `workspace/platform/*.json` 与责任确认记录。

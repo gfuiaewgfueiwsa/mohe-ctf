@@ -26,16 +26,13 @@ class WebWorkflowFrame(ctk.CTkFrame):
         self._task_id = 0
         self.results = []
         self.url_value = StringVar()
-        self.authorized = BooleanVar(value=False)
-        self.url_value.trace_add("write", lambda *_: self.authorized.set(False))
 
         head = theme.panel(self)
         head.pack(fill="x", padx=14, pady=(12, 6))
         ctk.CTkLabel(head, text="Web CTF · 单目标顺序检测", font=theme.font(16, "bold"),
                      text_color=theme.TEXT, anchor="w").pack(side="left")
         theme.chip(head, "每步限时 180 秒", "mute").pack(side="right")
-        theme.chip(head, "只读取证 · 不自动利用", "info").pack(side="right", padx=(0, 6))
-
+        theme.chip(head, "单目标 · 请求留审计", "info").pack(side="right", padx=(0, 6))
         url_row = theme.panel(self)
         url_row.pack(fill="x", padx=14)
         self.url_entry = theme.entry(url_row, textvariable=self.url_value,
@@ -73,8 +70,6 @@ class WebWorkflowFrame(ctk.CTkFrame):
 
         ctl_row = theme.panel(self)
         ctl_row.pack(fill="x", padx=14, pady=(10, 0))
-        self.auth_checkbox = theme.checkbox(ctl_row, "此目标是本次 CTF 授权靶机", variable=self.authorized)
-        self.auth_checkbox.pack(side="left")
         self.start_button = theme.button(ctl_row, "开始测试", "primary", width=130, command=self.start)
         self.start_button.pack(side="right")
         self.stop_button = theme.button(ctl_row, "停止检测", "subtle", width=104,
@@ -144,9 +139,6 @@ class WebWorkflowFrame(ctk.CTkFrame):
     def start(self, selected=None):
         if self.is_running():
             return
-        if not self.authorized.get():
-            messagebox.showwarning("需要确认目标", "请确认当前网址是本次 CTF 比赛授权靶机。", parent=self)
-            return
         url = self.url_value.get().strip()
         if not url:
             messagebox.showwarning("需要网址", "请输入完整的 HTTP/HTTPS 题目网址。", parent=self)
@@ -167,9 +159,6 @@ class WebWorkflowFrame(ctk.CTkFrame):
 
     def start_ports(self, ports):
         if self.is_running():
-            return
-        if not self.authorized.get():
-            messagebox.showwarning("需要确认目标", "请确认当前网址是本次 CTF 比赛授权靶机。", parent=self)
             return
         from urllib.parse import urlsplit
         from . import webtools

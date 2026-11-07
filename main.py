@@ -1,11 +1,22 @@
 # -*- coding: utf-8 -*-
 """魔盒-ctf 启动入口（原 CTFToolbox）。
 用法：
-  双击/无参数          启动图形界面
+  双击/无参数          启动图形界面（启动时须勾选同意《软件责任说明》）
   魔盒-ctf.exe --cli <文件> [文件...]   命令行批量分析（报告写入 workspace/cli_report.txt）
   魔盒-ctf.exe --rac "题目描述" [附件...]  RAC 自动化流水线（识别→匹配脚本→填参→执行→提取 flag）
-  魔盒-ctf.exe --webauto <URL> --ctf-only   Web 自动化解题（只读、同源、限速的取证链）
-  魔盒-ctf.exe --webattack <URL> --ctf-only Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
+  魔盒-ctf.exe --webauto <URL>   Web 自动化解题（只读、同源、限速的取证链）
+  魔盒-ctf.exe --webattack <URL> Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
+  魔盒-ctf.exe --auto <文件|URL> [--deep] [--render]
+                                      v3.7.0 一键梭哈（识别→反编译/密码试解/Web 全量利用→证据链→候选 flag）
+  魔盒-ctf.exe --comp <memory|traffic|mobile|codeaudit|baseline|logtime|defense|compare> ...
+                                      v3.7.0 赛事专项（离线取证/审计/加固基线，只生成不执行）
+  魔盒-ctf.exe --platform polarctf --cookie <文件|Cookie>
+  魔盒-ctf.exe --platform polarctf --list [--category WEB]
+  魔盒-ctf.exe --platform polarctf --solve <题目ID>
+                                      v3.7.0 平台闭环（登录态→开实例→一键梭哈→自动提交）
+
+CLI 首次使用须加 --accept-responsibility（同意《软件责任说明》并记住本机）；
+之后可直接运行。逐工具授权闸门与 --ctf-only 强制参数已取消。
 """
 import sys
 import os
@@ -99,13 +110,13 @@ def run_rac(args):
 
 
 def run_pwn(args):
-    """Pwn 自动化 CLI：--pwn <ELF> [--host H --port P --offset N --win 0xADDR] --ctf-only"""
+    """Pwn 自动化 CLI：--pwn <ELF> [--host H --port P --offset N --win 0xADDR]"""
     from ctfbox import pwnrun
     from ctfbox.common import Report, WORKSPACE
 
     path = next((a for a in args if os.path.isfile(a)), "")
     if not path:
-        raise SystemExit("用法：魔盒-ctf.exe --pwn <ELF> [--host H --port P] --ctf-only")
+        raise SystemExit("用法：魔盒-ctf.exe --pwn <ELF> [--host H --port P]")
     opts = {}
     for i, a in enumerate(args):
         if a.startswith("--") and i + 1 < len(args):
@@ -143,7 +154,7 @@ def run_pwn(args):
 
 
 def run_webauto(url):
-    """Web 自动化解题 CLI：--webauto <URL> --ctf-only"""
+    """Web 自动化解题 CLI：--webauto <URL>"""
     from ctfbox import webauto
     from ctfbox.common import WORKSPACE
 
@@ -165,12 +176,71 @@ def run_webauto(url):
         fp.write(str(res.get("summary") or ""))
         fp.write("\n请求数：%s\n" % res.get("requests"))
         fp.write("FLAG: " + ("; ".join(res.get("flags") or []) or "(无)") + "\n")
-        fp.write("\nJSON 报告：" + webauto.save_report(res) + "\n")
+        # 只在拿到 flag 时落盘 JSON 报告
+        if res.get("flags"):
+            fp.write("\nJSON 报告：" + webauto.save_report(res) + "\n")
     return out
 
 
+def run_v3_auto(args):
+    """一键梭哈 CLI：--auto <文件|URL> [选项]"""
+    from ctfbox.autopilot.cli import run_auto, _print_result
+
+    opts = {"allow_private": "--allow-private" in args,
+            "deep": "--deep" in args, "render": "--render" in args,
+            "headless": "--headful" not in args,
+            "exploit": "--exploit" in args,
+            "i_own": "--i-own-this-target" in args}
+    hosts, target, user_data, cdp, consent_feature, ysoserial = [], "", "", "", "", ""
+    hints = []
+    skip = False
+    value_flags = ("--allow-host", "--user-data", "--cdp", "--consent",
+                   "--ysoserial", "--hint")
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if a in value_flags:
+            val = args[i + 1] if i + 1 < len(args) else ""
+            if a == "--allow-host":
+                hosts.append(val)
+            elif a == "--hint":
+                hints.append(val)
+            elif a == "--user-data":
+                user_data = val
+            elif a == "--cdp":
+                cdp = val
+            elif a == "--consent":
+                consent_feature = val
+            else:
+                ysoserial = val
+            skip = True
+            continue
+        if a in ("--allow-private", "--deep", "--render", "--headful", "--ctf-only",
+                 "--json", "--exploit", "--i-own-this-target"):
+            continue
+        if not target and not a.startswith("--"):
+            target = a
+    if not target:
+        raise SystemExit("用法：魔盒-ctf.exe --auto <文件|URL>")
+
+    def log(m):
+        try:
+            print(m, flush=True)
+        except Exception:
+            pass
+
+    result = run_auto(target, True, opts["allow_private"], hosts,
+                      opts["deep"], opts["render"], log=log,
+                      user_data=user_data, cdp=cdp, headless=opts["headless"],
+                      exploit=opts["exploit"], consent_feature=consent_feature,
+                      i_own=opts["i_own"], ysoserial=ysoserial, hints=hints)
+    _print_result(result)
+    return os.path.join(result.get("workdir", ""), "report.md")
+
+
 def run_webattack(url):
-    """深度 Web 全自动 CLI：--webattack <URL> --ctf-only"""
+    """深度 Web 全自动 CLI：--webattack <URL>"""
     from ctfbox import webattack
     from ctfbox.common import WORKSPACE
 
@@ -191,7 +261,9 @@ def run_webattack(url):
         fp.write("\n".join(lines))
         fp.write("\n\n========== 汇总 ==========\n")
         fp.write(text)
-        fp.write("\n\nJSON 报告：" + webattack.save_report(res) + "\n")
+        # 只在拿到 flag 时落盘 JSON 报告
+        if res.get("flags"):
+            fp.write("\n\nJSON 报告：" + webattack.save_report(res) + "\n")
     return out
 
 
@@ -216,9 +288,16 @@ if __name__ == "__main__":
             raise SystemExit(2)
         raise SystemExit(worker_main(sys.argv[2], int(sys.argv[3]), sys.argv[4]))
 
+    # 唯一责任闸门：CLI 首次使用须同意《软件责任说明》（GUI 走启动弹窗）
+    CLI_MODES = {"--cli", "-c", "--rac", "--webauto", "--web", "--pwn",
+                 "--auto", "--v3", "--webattack", "--deep", "--platform", "--comp"}
+    if len(sys.argv) > 1 and sys.argv[1] in CLI_MODES:
+        from ctfbox.responsibility import ensure_cli
+        if not ensure_cli(sys.argv[1:]):
+            raise SystemExit(2)
+        sys.argv = [a for a in sys.argv if a != "--accept-responsibility"]
+
     if len(sys.argv) > 1 and sys.argv[1] in ("--cli", "-c"):
-        if "--ctf-only" not in sys.argv[2:]:
-            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
         # CLI 模式统一 UTF-8 输出，避免 PowerShell/cmd 默认 GBK 代码页下中文乱码
         # （报告文件本身始终为 UTF-8，这里只修控制台/重定向输出层）。
         if sys.platform.startswith("win"):
@@ -231,15 +310,13 @@ if __name__ == "__main__":
                 _s.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
-        report_path = run_cli([arg for arg in sys.argv[2:] if arg != "--ctf-only"])
+        report_path = run_cli(sys.argv[2:])
         try:
             if sys.stdout:
                 print("report written to:", report_path)
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] == "--rac":
-        if "--ctf-only" not in sys.argv[2:]:
-            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
         if sys.platform.startswith("win"):
             try:
                 os.system("chcp 65001 >nul 2>nul")
@@ -250,18 +327,16 @@ if __name__ == "__main__":
                 _s.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
-        report_path = run_rac([arg for arg in sys.argv[2:] if arg != "--ctf-only"])
+        report_path = run_rac(sys.argv[2:])
         try:
             if sys.stdout:
                 print("report written to:", report_path)
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] in ("--webauto", "--web"):
-        if "--ctf-only" not in sys.argv[2:]:
-            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
-        target = next((a for a in sys.argv[2:] if a != "--ctf-only"), "")
+        target = sys.argv[2] if len(sys.argv) > 2 else ""
         if not target:
-            raise SystemExit('用法：魔盒-ctf.exe --webauto <URL> --ctf-only')
+            raise SystemExit('用法：魔盒-ctf.exe --webauto <URL>')
         if sys.platform.startswith("win"):
             try:
                 os.system("chcp 65001 >nul 2>nul")
@@ -279,8 +354,6 @@ if __name__ == "__main__":
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] == "--pwn":
-        if "--ctf-only" not in sys.argv[2:]:
-            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
         if sys.platform.startswith("win"):
             try:
                 os.system("chcp 65001 >nul 2>nul")
@@ -291,18 +364,37 @@ if __name__ == "__main__":
                 _s.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
-        report_path = run_pwn([a for a in sys.argv[2:] if a != "--ctf-only"])
+        report_path = run_pwn(sys.argv[2:])
+        try:
+            if sys.stdout:
+                print("report written to:", report_path)
+        except Exception:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1] in ("--auto", "--v3"):
+        if sys.platform.startswith("win"):
+            try:
+                os.system("chcp 65001 >nul 2>nul")
+            except Exception:
+                pass
+        for _s in (sys.stdout, sys.stderr):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        try:
+            report_path = run_v3_auto(sys.argv[2:])
+        except Exception as exc:
+            raise SystemExit(str(exc))
         try:
             if sys.stdout:
                 print("report written to:", report_path)
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] in ("--webattack", "--deep"):
-        if "--ctf-only" not in sys.argv[2:]:
-            raise SystemExit("仅限 CTF 比赛授权题目使用。确认后添加 --ctf-only 参数。")
-        target = next((a for a in sys.argv[2:] if a != "--ctf-only"), "")
+        argv = sys.argv[2:]
+        target = next((a for a in argv if not a.startswith("--")), "")
         if not target:
-            raise SystemExit('用法：魔盒-ctf.exe --webattack <URL> --ctf-only')
+            raise SystemExit('用法：魔盒-ctf.exe --webattack <URL>')
         if sys.platform.startswith("win"):
             try:
                 os.system("chcp 65001 >nul 2>nul")
@@ -313,12 +405,42 @@ if __name__ == "__main__":
                 _s.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
-        report_path = run_webattack(target)
+        try:
+            report_path = run_webattack(target)
+        except Exception as exc:
+            raise SystemExit(str(exc))
         try:
             if sys.stdout:
                 print("report written to:", report_path)
         except Exception:
             pass
+    elif len(sys.argv) > 1 and sys.argv[1] == "--platform":
+        if sys.platform.startswith("win"):
+            try:
+                os.system("chcp 65001 >nul 2>nul")
+            except Exception:
+                pass
+        for _s in (sys.stdout, sys.stderr):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        from ctfbox.platforms.cli import main as platform_main
+        platform_args = ["--platform"] + [a for a in sys.argv[2:] if a != "--ctf-only"]
+        raise SystemExit(platform_main(platform_args))
+    elif len(sys.argv) > 1 and sys.argv[1] == "--comp":
+        if sys.platform.startswith("win"):
+            try:
+                os.system("chcp 65001 >nul 2>nul")
+            except Exception:
+                pass
+        for _s in (sys.stdout, sys.stderr):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        from ctfbox.competition.cli import main as comp_main
+        raise SystemExit(comp_main([a for a in sys.argv[2:] if a != "--ctf-only"]))
     else:
         try:
             from ctfbox.ui_consent import confirm_ctf_use

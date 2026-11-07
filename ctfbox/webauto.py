@@ -363,6 +363,10 @@ def probe_sensitive(base, budget, log, baseline):
         findings.append({"path": path, "label": label, "status": st, "hit": True,
                          "bytes": len(raw), "flags": flags, "note": _snippet(text)})
         log("[auto] 命中 %d %s —— %s%s" % (st, path, label, ("；flag: " + ", ".join(flags)) if flags else ""))
+        if flags:
+            # flag 优先：已经拿到答案，不再把剩余敏感路径跑完
+            log("[auto] 敏感路径已读到 flag，停止后续路径探测")
+            return findings
     return findings
 
 
@@ -507,7 +511,7 @@ def build_hints(finding_list, param_results, flaglist):
 
 
 def auto_solve(url, log=print, max_requests=160, max_seconds=240, cancel_event=None,
-               deadline=None):
+               deadline=None, stop_on_flag=True):
     """主入口。返回 dict（可直接 json 序列化）。"""
     url = _safe_url(url)
     if deadline is None:
@@ -569,13 +573,16 @@ def auto_solve(url, log=print, max_requests=160, max_seconds=240, cancel_event=N
                                                 "flags": collect_flags(text_of(item))})
 
         result["sensitive"].extend(probe_sensitive(root_path, budget, log, baseline))
-        result["dirs"] = probe_dirs(root_path, budget, log, baseline)
-        result["params"] = test_params(url, budget, log)
-
         for f in result["sensitive"]:
             result["flags"].extend(f.get("flags") or [])
-        for p in result["params"]["results"]:
-            result["flags"].extend(p.get("flags") or [])
+        # flag 优先：敏感路径已拿到 flag 就跳过目录词表与参数弱点，省掉几十次请求
+        if result["flags"] and stop_on_flag:
+            log("[auto] 已拿到 flag，跳过目录探测与参数弱点（完整模式可传 stop_on_flag=False）")
+        else:
+            result["dirs"] = probe_dirs(root_path, budget, log, baseline)
+            result["params"] = test_params(url, budget, log)
+            for p in result["params"]["results"]:
+                result["flags"].extend(p.get("flags") or [])
     except AutoStop as exc:
         result["stopped"] = str(exc)
         log("[auto] 提前收手：%s" % exc)

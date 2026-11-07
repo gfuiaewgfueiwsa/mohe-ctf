@@ -19,7 +19,7 @@ PNG_SIG = b"\x89PNG\r\n\x1a\n"
 # ----------------------------------------------------------------------------
 # 入口
 # ----------------------------------------------------------------------------
-def analyze(path, report: Report):
+def analyze(path, report: Report, passwords=None):
     if Image is None:
         report.add("warn", "Pillow/numpy 未安装，图片分析不可用")
         return
@@ -47,6 +47,11 @@ def analyze(path, report: Report):
     if img.format == "GIF":
         _gif_frames(img, report, outdir)
     _lsb(img, report, outdir)
+    try:
+        from .modules_stego import analyze_cloacked
+        analyze_cloacked(path, report, outdir, passwords=passwords)
+    except Exception:
+        pass
     _qr(raw, report, outdir, img)
     _appended(raw, img.format, report, outdir)
     _fft(img, report, outdir)

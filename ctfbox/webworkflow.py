@@ -837,9 +837,12 @@ def _auto(url, log, cancel_event, deadline):
                                 cancel_event=cancel_event)
     _check_control(cancel_event, deadline)
     status = "ok" if not result.get("stopped") else "error"
-    detail = (result.get("summary", "") + "\n请求数：%s；报告：%s"
-              % (result.get("requests"), webauto.save_report(result)))
-    return status, detail
+    flags = result.get("flags") or []
+    # 只在拿到 flag 时落盘报告；没拿到就没有可交付的结果，不产生报告文件
+    path = webauto.save_report(result) if flags else ""
+    detail = result.get("summary", "") + "\n请求数：%s%s" % (
+        result.get("requests"), ("；报告：" + path) if path else "")
+    return status, detail, flags
 
 
 def _deep(url, log, cancel_event, deadline):
@@ -855,14 +858,23 @@ def _deep(url, log, cancel_event, deadline):
     result = webattack.campaign(url, log=log, max_seconds=min(left, 240.0),
                                 cancel_event=cancel_event)
     _check_control(cancel_event, deadline)
-    report = webattack.render(result)
-    path = webattack.save_report(result)
+    flags = result.get("flags") or []
     status = "ok" if not result.get("stopped") else "error"
-    detail = (report[-4000:] if len(report) > 4000 else report) + "\n请求数：%s；JSON 报告：%s" % (
-        result.get("requests"), path)
-    # ---- 外部工具接力：只在还有时间、且工具真的可用时才跑 ----
+    # 只在拿到 flag 时落盘报告：没拿到就不写文件，界面日志仍给出摘要与请求数
+    if flags:
+        report = webattack.render(result)
+        path = webattack.save_report(result)
+        detail = (report[-4000:] if len(report) > 4000 else report) + "\n请求数：%s；JSON 报告：%s" % (
+            result.get("requests"), path)
+    else:
+        detail = ("未拿到 flag。请求数：%s；发现 %d 条。"
+                  % (result.get("requests"), len(result.get("findings") or [])))
+    # ---- 外部工具接力：只在还有时间、工具可用、且还没拿到 flag 时才跑 ----
     types = {f["type"] for f in result.get("findings") or []}
     follow = []
+    if flags:
+        detail += "\n已拿到 flag，跳过外部工具接力。"
+        return status, detail, flags
     try:
         if ("sqli-error" in types or "sqli-boolean" in types or "sqli-time" in types) \
                 and deadline - time.monotonic() > 45:
@@ -881,11 +893,11 @@ def _deep(url, log, cancel_event, deadline):
         follow.append("外部工具失败：%s: %s" % (type(exc).__name__, exc))
     if follow:
         detail += "\n\n== 外部工具接力 ==" + "\n" + "\n".join("- " + item for item in follow)
-    return status, detail
+    return status, detail, flags
 
 
 def run_workflow(url, steps, log=print, cancel_event=None, step_timeout=180):
-    """Run selected steps in caller order and save a JSON report to REPORTS_DIR.
+    """Run selected steps in caller order；只在拿到 flag 时汇总 JSON 报告到 REPORTS_DIR。
 
     Returns [{step, status, detail}], statuses: ok/skipped/error/timeout/cancelled.
     Invalid URL/steps/timeout raise ValueError before any requests. Failures and
@@ -911,9 +923,11 @@ def run_workflow(url, steps, log=print, cancel_event=None, step_timeout=180):
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     run_id = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex
     results, cancelled = [], False
+    got_flags = []
     log("[workflow] CTF-only single-origin sequence; use only your authorized challenge. No crawling or redirects.")
     for step in steps:
         deadline = time.monotonic() + step_timeout
+        flags = []
         try:
             if cancelled:
                 raise TaskCancelled("Not started: workflow cancelled")
@@ -931,9 +945,9 @@ def run_workflow(url, steps, log=print, cancel_event=None, step_timeout=180):
             elif step == "xss":
                 status, detail = _xss(url, log, cancel_event, deadline)
             elif step == "auto":
-                status, detail = _auto(url, log, cancel_event, deadline)
+                status, detail, flags = _auto(url, log, cancel_event, deadline)
             elif step == "deep":
-                status, detail = _deep(url, log, cancel_event, deadline)
+                status, detail, flags = _deep(url, log, cancel_event, deadline)
             elif step in ("dirsearch", "ffuf"):
                 status, detail = _directory_tool(step, url, log, cancel_event, deadline, run_id)
             else:
@@ -945,12 +959,18 @@ def run_workflow(url, steps, log=print, cancel_event=None, step_timeout=180):
             status, detail = "timeout", str(exc)
         except Exception as exc:
             status, detail = "error", "%s: %s" % (type(exc).__name__, exc)
+        got_flags.extend(flags)
         results.append({"step": step, "status": status, "detail": detail})
         log("[workflow] %s: %s — %s" % (step, status, detail))
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    report_path = os.path.abspath(os.path.join(REPORTS_DIR, "web_workflow_" + run_id + ".json"))
-    with open(report_path, "w", encoding="utf-8") as handle:
-        json.dump({"url": url, "started_utc": started, "scope": "CTF-only; single origin; no redirects/crawling",
-                   "results": results}, handle, ensure_ascii=False, indent=2)
-    log("[workflow] JSON report: " + report_path)
+    # 只在真正拿到 flag 的那一步落盘汇总报告；没拿到就不产生报告文件
+    if got_flags:
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        report_path = os.path.abspath(os.path.join(REPORTS_DIR, "web_workflow_" + run_id + ".json"))
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump({"url": url, "started_utc": started,
+                       "scope": "CTF-only; single origin; no redirects/crawling",
+                       "flags": got_flags, "results": results}, handle, ensure_ascii=False, indent=2)
+        log("[workflow] 拿到 flag，已生成 JSON 报告：" + report_path)
+    else:
+        log("[workflow] 未拿到 flag，不生成报告文件")
     return results

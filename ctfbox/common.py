@@ -56,6 +56,29 @@ for _d in (TOOLS_DIR, WORKSPACE, REPORTS_DIR, EXPORTS_DIR):
     os.makedirs(_d, exist_ok=True)
 
 
+def ensure_playwright_browsers() -> str:
+    """修正 PyInstaller 冻结后的 Playwright 浏览器路径。
+
+    Playwright 在 `sys.frozen` 时会强制 `PLAYWRIGHT_BROWSERS_PATH=0`，
+    只找 `playwright/driver/package/.local-browsers`；随包不携带该目录时必然
+    "Executable doesn't exist"，SPA 渲染被迫降级为 Chrome headless（无 XHR 采集）。
+    这里在启动前指向随包浏览器目录或本机已安装的浏览器目录，返回生效路径。
+    """
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        return os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+    if not IS_FROZEN:
+        return ""
+    candidates = [
+        os.path.join(APP_DIR, "tools", "runtime", "ms-playwright"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "ms-playwright"),
+    ]
+    for c in candidates:
+        if c and os.path.isdir(c):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = c
+            return c
+    return ""
+
+
 def app_path(*parts) -> str:
     """返回软件所在目录下的路径（不自动建目录）。"""
     return os.path.join(APP_DIR, *parts)
@@ -200,7 +223,10 @@ STRONG_PREFIXES = [
 ]
 FLAG_STRONG = (rb"(?i)(?:" + b"|".join(STRONG_PREFIXES) +
                rb")\{[^\r\n\x00]{1,200}?\}")
-FLAG_KV = rb"(?i)flag[=:][ ]?[A-Za-z0-9_\-]{4,120}"
+# flag=xxx / flag:xxx：要求值带花括号或至少 8 个 token 字符，
+# 避免把 CSS/JS 里的 `flag:before`、`flag:hover` 等伪类当成 flag。
+FLAG_KV = (rb"(?i)flag[=:][ ]?(?:\{[A-Za-z0-9_\-./+=@$%^&*!?]{3,199}\}"
+           rb"|[A-Za-z0-9_\-]{8,120})")
 # 弱模式：任意 前缀{...}，仅用于文件原始数据/雕刻/字符串扫描。
 # 收紧：内容首字符须为字母数字、整体为 token 形态（排除 CSS/键值里常见的 '#',':',';' 与空白），
 # 内容至少 4 个字符，显著降低在高熵二进制 / 样式表上的误报。
@@ -208,6 +234,24 @@ FLAG_WEAK = rb"[A-Za-z0-9_]{2,20}\{[A-Za-z0-9][A-Za-z0-9_\-./+=@$%^&*!?]{3,199}?
 
 SCAN_WINDOW = 4 * 1024 * 1024     # 大文件分窗扫描，避免弱正则在超长数据上回溯放大
 SCAN_OVERLAP = 256                # 窗口重叠，防止 flag 跨窗截断
+
+# 源码模板里的占位 flag（flag{??????}、YOUR_FLAG_HERE 等）不是真实答案，
+# 命中后会把附件分析结果污染成「已解出」，必须在提取层统一丢弃。
+_PLACEHOLDER_CHARS = re.compile(r"^[?*#._\-\sxX]+$")
+_PLACEHOLDER_BODY = re.compile(
+    r"(?i)^(?:(?:your[_-]?)?(?:flag|ctf|answer|secret|token|key|pass(?:word)?)"
+    r"(?:[_-](?:is[_-])?(?:here|placeholder|redacted|xxx*))?"
+    r"|todo|tbd|placeholder|redacted|changeme|example|none|null|undefined)$")
+
+def is_placeholder_flag(value: str) -> bool:
+    """判断提取值是否为模板占位符（不属于真实 flag）。"""
+    if not value:
+        return True
+    m = re.match(r"(?is)^[A-Za-z0-9_]{2,20}\{(.*)\}$", value.strip())
+    body = (m.group(1) if m else value).strip()
+    if not body:
+        return True
+    return bool(_PLACEHOLDER_CHARS.fullmatch(body) or _PLACEHOLDER_BODY.fullmatch(body))
 
 def scan_flags(data: bytes, strong_only: bool = False) -> List[str]:
     """在字节数据中搜索 flag，返回去重后的字符串列表。
@@ -246,6 +290,8 @@ def scan_flags(data: bytes, strong_only: bool = False) -> List[str]:
                 try:
                     s = m.group().decode("utf-8", errors="replace").strip()
                 except Exception:
+                    continue
+                if is_placeholder_flag(s):
                     continue
                 if s not in found:
                     found.append(s)

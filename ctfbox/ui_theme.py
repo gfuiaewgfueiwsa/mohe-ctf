@@ -80,7 +80,7 @@ FONT_TITLE = 14
 FONT_H1 = 18
 
 APP_NAME = "魔盒-ctf"
-APP_VERSION = "v2.5"
+APP_VERSION = "v3.7.0"
 APP_SUBTITLE = "万能 CTF 集合工具箱 · 附件分析 / 编码解码 / 隐写取证 / Web · Pwn / 自动化"
 
 # ======================================================================

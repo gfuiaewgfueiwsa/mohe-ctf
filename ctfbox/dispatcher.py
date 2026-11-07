@@ -153,7 +153,7 @@ class Dispatcher:
         # ---- 分流 ----
         try:
             if info.category == "text":
-                self._text_flow(path, raw, rep, indent)
+                self._text_flow(path, raw, rep, indent, outdir)
                 # 正文里单独藏着的 base64 / hex 片段，主流程常按哈希处理，这里再扫一遍
                 try:
                     from . import textscan
@@ -203,6 +203,13 @@ class Dispatcher:
                 except Exception:
                     pass
                 modules_archive.analyze(path, rep, info.ftype, outdir)
+                # APK：清单权限/导出组件/证书/DEX 字符串/硬编码凭据（仅解包，不执行）
+                if path.lower().endswith(".apk"):
+                    try:
+                        from .competition import mobile as comp_mobile
+                        comp_mobile.enhance(path, rep, outdir)
+                    except Exception as e:
+                        rep.add("info", "APK 深度分析跳过", str(e)[:160])
                 # Office 文档（.docx 常被识别为 ZIP）多点隐写拼接
                 if path.lower().endswith(".docx"):
                     try:
@@ -222,6 +229,11 @@ class Dispatcher:
                     self.crc_consumed |= consumed
             elif info.category == "capture":
                 modules_traffic.analyze(path, rep, outdir)
+                try:
+                    from .competition import traffic as comp_traffic
+                    comp_traffic.enhance(path, rep, outdir)
+                except Exception as _ct:
+                    rep.add("info", "流量深度分析跳过", str(_ct)[:160])
             elif info.category == "executable":
                 self._executable_flow(path, raw, rep, info, outdir, depth)
             elif info.category == "forensic":
@@ -295,11 +307,19 @@ class Dispatcher:
         return rep
 
     # ------------------------------------------------------------------
-    def _text_flow(self, path, raw, rep: Report, indent):
+    def _text_flow(self, path, raw, rep: Report, indent, outdir=""):
         is_text, enc, text = try_decode_text(raw)
         if not text:
             text = raw.decode("utf-8", errors="replace")
         rep.add("info", "文本编码", enc or "utf-8(replace)")
+        # PHP/Java/Python 源码：危险函数 + 污点链审计
+        if path.lower().endswith((".php", ".java", ".py", ".jsp", ".pyw")):
+            try:
+                from .competition import codeaudit as comp_codeaudit
+                comp_codeaudit.enhance(path, rep,
+                                       outdir or os.path.join(os.path.dirname(path) or ".", "codeaudit"))
+            except Exception as e:
+                rep.add("info", "代码审计跳过", str(e)[:160])
         tx_out = os.path.join(WORKSPACE, "polar_" + re.sub(r"[^\w.-]", "_", os.path.basename(path))[:30])
         # Web 访问日志（access.log / nginx / IIS 等）
         try:
@@ -442,6 +462,13 @@ class Dispatcher:
             shown += 1
         if not results:
             rep.add("info", "自动解码", "未匹配常见编码")
+        # 异常椭圆曲线：大量坐标点、隐去 p/a/b → 自动恢复曲线并做 HNP/正交格攻击
+        if not any(f.level == "flag" for f in rep.findings):
+            try:
+                from . import modules_ecc
+                modules_ecc.analyze_text(text, rep)
+            except Exception as e:
+                rep.add("info", "ECC 异常曲线分析跳过", str(e)[:120])
 
     def _crc_suite_after_extract(self, outdir, rep: Report):
         """解压后若出现一批 outN.zip / 编号小压缩包，自动做跨文件 CRC 套件碰撞。
@@ -516,6 +543,12 @@ class Dispatcher:
                 modules_forensics.analyze_evtx(path, rep, os.path.join(outdir, "evtx"))
             except Exception as e:
                 rep.add("info", "evtx 分析跳过", str(e)[:120])
+            # 关键事件提取 + 时间线重建
+            try:
+                from .competition import logtime as comp_logtime
+                comp_logtime.enhance(path, rep, outdir)
+            except Exception as e:
+                rep.add("info", "日志时间线跳过", str(e)[:160])
         # 磁盘 / 内存镜像（含 VMDK/VHD/raw）
         if raw[:4] == b"KDMV" or ext in (".vmdk", ".vhd", ".vhdx", ".vdi", ".ova",
                                          ".img", ".raw", ".dd", ".e01") or name.endswith(".img"):

@@ -34,7 +34,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         theme.init(self)
-        self.title(f"{theme.APP_NAME} {theme.APP_VERSION} · 万能 CTF 集合工具箱 | 仅限 CTF 比赛")
+        self.title(f"{theme.APP_NAME} {theme.APP_VERSION} · 万能 CTF 集合工具箱")
         # 自适应窗口：小屏 / 高 DPI 下不把按钮和状态栏挤出屏幕外
         screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
         win_w = max(1080, min(1360, screen_w - 40))
@@ -66,10 +66,12 @@ class App(ctk.CTk):
         self.tabs = theme.tabview(self, command=self._on_tab)
         self.tabs.pack(fill="both", expand=True, padx=14, pady=(8, 6))
         self.t_ana = self.tabs.add("一键分析")
+        self.t_auto = self.tabs.add("一键梭哈")
         self.t_code = self.tabs.add("编码/密码")
         self.t_cipher = self.tabs.add("密文加解密")
         self.t_util = self.tabs.add("实用小工具")
         self.t_tool = self.tabs.add("专项工具")
+        self.t_comp = self.tabs.add("赛事专项")
         self.t_rac = self.tabs.add("RAC 自动化")
         self.t_web = self.tabs.add("Web / Pwn")
         self.t_lib = self.tabs.add("📚 脚本库")
@@ -90,12 +92,13 @@ class App(ctk.CTk):
         self.ssh = SSHTab(self.t_ssh)
         self.ssh.pack(fill="both", expand=True)
         self._build_center()
-        self._lazy_tabs = {"媒体中心": self._build_media, "网页导航": self._build_webnav,
-                           "RAC 自动化": self._build_rac}
+        self._lazy_tabs = {"一键梭哈": self._build_auto, "媒体中心": self._build_media,
+                           "网页导航": self._build_webnav, "RAC 自动化": self._build_rac,
+                           "赛事专项": self._build_comp}
 
         help_wrap = theme.card(self.t_help)
         help_wrap.pack(fill="both", expand=True, padx=8, pady=8)
-        theme.section(help_wrap, "使用说明", "仅限 CTF 比赛授权题目", padx=14, pady=(12, 8))
+        theme.section(help_wrap, "使用说明", "进入即代表已同意《软件责任说明》", padx=14, pady=(12, 8))
         help_box = theme.textbox(help_wrap, size=13, wrap="word")
         help_box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         help_box.insert("1.0", USAGE_TEXT)
@@ -140,7 +143,7 @@ class App(ctk.CTk):
         right.pack(side="right")
         self.header_state = theme.chip(right, "● 就绪", "info")
         self.header_state.pack(side="right", padx=(8, 0))
-        theme.chip(right, "仅限 CTF 授权赛事", "warn").pack(side="right", padx=(8, 0))
+        theme.chip(right, "授权责任自负", "warn").pack(side="right", padx=(8, 0))
         theme.chip(right, "本地运行 · 结果不外传", "ok").pack(side="right")
 
     def _build_statusbar(self):
@@ -1908,6 +1911,16 @@ class App(ctk.CTk):
     # ===================================================================
     # 队列分发
     # ===================================================================
+    def _build_auto(self):
+        from .ui_autopilot import AutoPilotTab
+        self.autopilot = AutoPilotTab(self.t_auto)
+        self.autopilot.pack(fill="both", expand=True)
+
+    def _build_comp(self):
+        from .ui_competition import CompetitionFrame
+        self.competition = CompetitionFrame(self.t_comp)
+        self.competition.pack(fill="both", expand=True)
+
     def _on_tab(self):
         builder = getattr(self, "_lazy_tabs", {}).pop(self.tabs.get(), None)
         if builder:

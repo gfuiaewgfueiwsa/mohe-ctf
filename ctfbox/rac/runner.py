@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from ..common import external_python, scan_flags
+from ..common import external_python, is_placeholder_flag, scan_flags
 from ..modules_exploit import FLAG_RE
 
 DEFAULT_TIMEOUT = 180
@@ -47,10 +47,10 @@ def extract_flags(output: str) -> List[str]:
     found: List[str] = []
     for m in FLAG_RE.finditer(output or ""):
         s = m.group(0)
-        if s not in found and "?" not in s and "..." not in s:
+        if s not in found and "?" not in s and "..." not in s and not is_placeholder_flag(s):
             found.append(s)
     for f in scan_flags((output or "").encode("utf-8", "ignore"), strong_only=True):
-        if f not in found and "?" not in f and "..." not in f:
+        if f not in found and "?" not in f and "..." not in f and not is_placeholder_flag(f):
             found.append(f)
     return found
 
