@@ -174,6 +174,27 @@ def password_candidates(path, hints=None, known=None):
             add(leet)
             add(leet.capitalize())
 
+    # 数字密码爆破：当文件名/hint 含 number/数字/位数提示时，自动试 0-999999
+    path_lower = (path or "").lower()
+    hints_str = " ".join(str(h) for h in (hints or [])).lower()
+    all_text = path_lower + " " + hints_str
+    digit_digits = None
+    import re as _re
+    m = _re.search(r"(\d+)\s*(number|位|digit)", all_text)
+    if m:
+        try:
+            digit_digits = int(m.group(1))
+        except Exception:
+            pass
+    if "number" in all_text or "数字" in all_text or digit_digits:
+        rng = range(10 ** digit_digits) if digit_digits and digit_digits <= 6 else range(1000000)
+        for i in rng:
+            add(str(i).zfill(digit_digits) if digit_digits else str(i))
+    else:
+        # 默认也试 0-9999（4位），CTF 常见
+        for i in range(10000):
+            add(f"{i:04d}")
+
     out, seen = [], set()
     for word in ordered:
         if word in seen:
