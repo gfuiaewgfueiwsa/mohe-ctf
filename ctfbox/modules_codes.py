@@ -982,6 +982,25 @@ def detect_special(text: str):
         except Exception:
             pass
 
+    # 变异凯撒（位移量逐字符递增，如 shift=5+i）
+    t = text.strip()
+    if 10 <= len(t) <= 80 and re.fullmatch(r"[\x20-\x7e]+", t):
+        try:
+            best = None
+            for start in range(0, 26):
+                for step in (1, 2):
+                    plain = "".join(chr((ord(c) + (start + i * step)) % 256)
+                                    if 32 <= ord(c) + (start + i * step) < 127
+                                    else c for i, c in enumerate(t))
+                    # 检查是否像 flag{...} 或高可读英文
+                    if "flag{" in plain.lower() or plain.startswith("flag{"):
+                        add(f"变异凯撒(start={start},step={step})", plain)
+                        best = plain
+                    elif readable_score(plain) > 15:
+                        add(f"变异凯撒(start={start},step={step})", plain)
+        except Exception:
+            pass
+
     # 盲文
     if any(0x2800 <= ord(c) <= 0x28FF for c in text):
         try:
