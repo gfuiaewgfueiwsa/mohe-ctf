@@ -19,12 +19,16 @@ OFFLINE_KEYS = {
     "pcmoe_buddha": "https://hi.pcmoe.net/buddha.html",
     "zero-width": "https://yuanfux.github.io/zero-width-web/",
     "qrazybox": "https://merri.cx/qrazybox/",
+    "jwt": "offline://jwt",
+    "base64_conv": "offline://base64_conv",
 }
 
 DATA = {
     "离线网页工具（已镜像到软件目录，断网可用）": [
         ("CyberChef 瑞士军刀", "https://gchq.github.io/CyberChef/", "CyberChef",
          "编码/解码/加密/压缩/数据处理一站式，完全离线"),
+        ("JWT 解码器", "offline://jwt", "jwt", "本地 JWT Header/Payload/签名解码"),
+        ("进制/Base64 转换", "offline://base64_conv", "base64_conv", "文本↔Hex/Base64/十进制/八进制"),
         ("兽音译者(嗷呜啊呀)", "https://hi.pcmoe.net/roar.html", "pcmoe_roar", "兽音加密离线页"),
         ("与熊论道/熊曰", "https://hi.pcmoe.net/bear.html", "pcmoe_bear", "熊语佛曰系编码离线页"),
         ("新约佛论禅", "https://hi.pcmoe.net/buddha.html", "pcmoe_buddha", "佛论禅离线页"),

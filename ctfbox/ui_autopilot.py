@@ -10,7 +10,18 @@ import customtkinter as ctk
 
 from . import ui_theme as theme
 
-VERSION_TAG = "v3.7.0"
+VERSION_TAG = "v4.0.0"
+
+# v4.0 七大梭哈模块（密码单独保留）
+_MODULES = [
+    ("杂项 Misc", "misc"),
+    ("密码 Crypto", "crypto"),
+    ("逆向 Reverse", "reverse"),
+    ("Web", "web"),
+    ("Pwn", "pwn"),
+    ("电子取证", "forensics"),
+    ("AI 投毒", "ai_poison"),
+]
 
 
 class AutoPilotTab(ctk.CTkFrame):
@@ -19,18 +30,29 @@ class AutoPilotTab(ctk.CTkFrame):
         self._q = queue.Queue()
         self._running = False
         self._result = None
+        self._module_var = ctk.StringVar(value="")
         self._build()
         self.after(150, self._drain)
 
     # ------------------------------------------------------------------
     def _build(self):
-        theme.notice(self, "使用前须已同意《软件责任说明》：仅对已获合法授权的目标操作；"
-                           "未知二进制默认只做静态分析。", kind="warn",
-                     wrap=1100, padx=10, pady=(10, 4))
-
+        # v4.0: 警告/说明统一挪到「使用说明」页，本页不再堆说明文字
         top = theme.card(self)
-        top.pack(fill="x", padx=10, pady=(4, 8))
-        theme.section(top, "一键梭哈", "v3.7.0 · 文件或 URL", padx=14, pady=(12, 6))
+        top.pack(fill="x", padx=10, pady=(10, 4))
+        theme.section(top, "一键梭哈", "v4.0.0 · 文件或 URL · 七模块自动分流",
+                      padx=14, pady=(12, 6))
+
+        # v4.0: 七大模块选择卡片（点选作为 hint，留空则自动判型）
+        mod_row = theme.panel(top)
+        mod_row.pack(fill="x", padx=14, pady=(0, 6))
+        ctk.CTkLabel(mod_row, text="题型提示（可不选，自动判型）：",
+                     font=theme.font(theme.FONT_SMALL),
+                     text_color=theme.TEXT_MUTE).pack(side="left")
+        for name, key in _MODULES:
+            theme.button(mod_row, name, "ghost", height=26, width=96,
+                         font=theme.font(theme.FONT_SMALL),
+                         command=lambda k=key: self._module_var.set(k)).pack(
+                side="left", padx=3)
 
         row = theme.panel(top)
         row.pack(fill="x", padx=14, pady=(0, 8))
@@ -44,16 +66,10 @@ class AutoPilotTab(ctk.CTkFrame):
         self.render_var = ctk.BooleanVar(value=False)
         self.deep_var = ctk.BooleanVar(value=False)
         self.exploit_var = ctk.BooleanVar(value=False)
-        try:
-            from .ai import ai_config
-            ai_default = bool(ai_config().get("enabled"))
-        except Exception:
-            ai_default = False
-        self.ai_var = ctk.BooleanVar(value=ai_default)
         theme.checkbox(row2, "浏览器渲染", variable=self.render_var).pack(side="left")
         theme.checkbox(row2, "深度分析", variable=self.deep_var).pack(side="left", padx=(14, 0))
         theme.checkbox(row2, "启用 Web 利用模块", variable=self.exploit_var).pack(side="left", padx=(14, 0))
-        theme.checkbox(row2, "本地模型裁判", variable=self.ai_var).pack(side="left", padx=(14, 0))
+        # v4.0: AI 由顶部全局开关控制，本页不再单独勾
 
         row3 = theme.panel(top)
         row3.pack(fill="x", padx=14, pady=(0, 4))
@@ -138,21 +154,28 @@ class AutoPilotTab(ctk.CTkFrame):
         self.status.configure(text="运行中…", text_color=theme.WARNING)
         self._log(f"===== {VERSION_TAG} 一键梭哈开始 =====")
         self._log(f"目标: {target}")
+        # v4.0: AI 是否启用由顶部全局开关（ai_config.json）决定
+        try:
+            from .ai import ai_config
+            ai_on = bool(ai_config().get("enabled"))
+        except Exception:
+            ai_on = False
+        hints = [self._module_var.get()] if self._module_var.get() else []
         threading.Thread(target=self._worker, args=(target, is_url, hosts, False,
                                                     self.deep_var.get(), self.render_var.get(),
                                                     self.user_data.get().strip(),
                                                     self.cdp.get().strip(), exploit,
-                                                    bool(self.ai_var.get())),
+                                                    ai_on, hints),
                          daemon=True).start()
 
     def _worker(self, target, is_url, hosts, allow_private, deep, render,
-                user_data="", cdp="", exploit=False, ai=False):
+                user_data="", cdp="", exploit=False, ai=False, hints=None):
         try:
             from .autopilot.orchestrator import AutoPilot
             pilot = AutoPilot(allow_private=allow_private, allow_hosts=hosts,
                               deep=deep, render=render, log=self._log,
                               user_data=user_data, cdp=cdp, exploit=exploit,
-                              ai=ai)
+                              ai=ai, hints=hints or [])
             res = pilot.run_url(target) if is_url else pilot.run_file(target)
             self._q.put(("done", res))
         except Exception:

@@ -67,11 +67,14 @@ class App(ctk.CTk):
         self.tabs.pack(fill="both", expand=True, padx=14, pady=(8, 6))
         self.t_ana = self.tabs.add("一键分析")
         self.t_auto = self.tabs.add("一键梭哈")
-        self.t_code = self.tabs.add("编码/密码")
-        self.t_cipher = self.tabs.add("密文加解密")
-        self.t_util = self.tabs.add("实用小工具")
-        self.t_tool = self.tabs.add("专项工具")
-        self.t_comp = self.tabs.add("赛事专项")
+        # v4.0: 编码/密码 + 密文加解密合并为「密码学」
+        self.t_code = self.tabs.add("密码学")
+        self.t_cipher = self.t_code
+        # v4.0: 实用小工具 + 专项工具合并为「杂项工具」
+        self.t_util = self.tabs.add("杂项工具")
+        self.t_tool = self.t_util
+        # v4.0: 砍掉「赛事专项」，其能力已融入各模块；新增「AI 投毒分析」
+        self.t_poison = self.tabs.add("AI 投毒分析")
         self.t_rac = self.tabs.add("RAC 自动化")
         self.t_web = self.tabs.add("Web / Pwn")
         self.t_lib = self.tabs.add("📚 脚本库")
@@ -94,7 +97,7 @@ class App(ctk.CTk):
         self._build_center()
         self._lazy_tabs = {"一键梭哈": self._build_auto, "媒体中心": self._build_media,
                            "网页导航": self._build_webnav, "RAC 自动化": self._build_rac,
-                           "赛事专项": self._build_comp}
+                           "AI 投毒分析": self._build_poison}
 
         help_wrap = theme.card(self.t_help)
         help_wrap.pack(fill="both", expand=True, padx=8, pady=8)
@@ -141,10 +144,49 @@ class App(ctk.CTk):
 
         right = theme.panel(header)
         right.pack(side="right")
+        # v4.0 顶部全局 AI 开关：默认关，切换写回 ai_config.json
+        self.ai_switch_var = ctk.BooleanVar(value=False)
+        try:
+            import json as _json
+            _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "..", "ai_config.json")
+            _cfg_path = os.path.normpath(_cfg_path)
+            if os.path.isfile(_cfg_path):
+                with open(_cfg_path, encoding="utf-8") as _fp:
+                    self.ai_switch_var.set(bool(_json.load(_fp).get("enabled")))
+        except Exception:
+            pass
+        self.ai_switch = ctk.CTkSwitch(
+            right, text="内置 AI", variable=self.ai_switch_var,
+            command=self._on_ai_switch, progress_color=theme.ACCENT,
+            font=theme.font(theme.FONT_SMALL))
+        self.ai_switch.pack(side="right", padx=(0, 12))
         self.header_state = theme.chip(right, "● 就绪", "info")
         self.header_state.pack(side="right", padx=(8, 0))
         theme.chip(right, "授权责任自负", "warn").pack(side="right", padx=(8, 0))
         theme.chip(right, "本地运行 · 结果不外传", "ok").pack(side="right")
+
+    def _on_ai_switch(self):
+        """顶部 AI 开关：写回 ai_config.json，并在状态栏提示。"""
+        on = bool(self.ai_switch_var.get())
+        try:
+            import json as _json
+            from .common import APP_DIR
+            cfg_path = os.path.join(APP_DIR, "ai_config.json")
+            data = {}
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, encoding="utf-8") as fp:
+                    data = _json.load(fp)
+            data["enabled"] = on
+            with open(cfg_path, "w", encoding="utf-8") as fp:
+                _json.dump(data, fp, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self._set_status("AI 开关写入失败: %s" % exc, "warn")
+            return
+        if on:
+            self._set_status("内置 AI 已启用（本地模型，CPU/GPU 自动）", "ok", "AI 开")
+        else:
+            self._set_status("内置 AI 已关闭（纯确定性自动化）", "info", "AI 关")
 
     def _build_statusbar(self):
         bar = ctk.CTkFrame(self, fg_color=theme.BG_SURFACE, corner_radius=0, height=28)
@@ -1916,10 +1958,62 @@ class App(ctk.CTk):
         self.autopilot = AutoPilotTab(self.t_auto)
         self.autopilot.pack(fill="both", expand=True)
 
-    def _build_comp(self):
-        from .ui_competition import CompetitionFrame
-        self.competition = CompetitionFrame(self.t_comp)
-        self.competition.pack(fill="both", expand=True)
+    def _build_poison(self):
+        """v4.0 AI 模型投毒/后门静态检测页。"""
+        top = theme.card(self.t_poison)
+        top.pack(fill="x", padx=8, pady=(10, 6))
+        theme.section(top, "AI 模型投毒分析",
+                      "静态扫描 .pkl/.pt/.safetensors/.onnx/.h5，绝不加载/执行模型",
+                      padx=14, pady=(12, 6))
+        row = theme.panel(top)
+        row.pack(fill="x", padx=14, pady=(0, 12))
+        self.poison_target = theme.entry(row, placeholder_text="选择 AI 模型文件（.pkl/.pt/.safetensors/.onnx/.h5/.pb）")
+        self.poison_target.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        theme.button(row, "选择模型", "subtle", width=100, height=32,
+                     command=self._pick_poison_file).pack(side="left", padx=(0, 6))
+        theme.button(row, "开始扫描", "primary", width=100, height=32,
+                     command=self._run_poison).pack(side="left")
+        body = theme.card(self.t_poison)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        self.poison_out = theme.textbox(body, mono_font=True, size=12)
+        self.poison_out.pack(fill="both", expand=True, padx=10, pady=10)
+
+    def _pick_poison_file(self):
+        path = filedialog.askopenfilename(
+            title="选择 AI 模型文件",
+            filetypes=[("AI 模型", "*.pkl *.pickle *.joblib *.pt *.pth *.ckpt *.bin "
+                                  "*.safetensors *.onnx *.h5 *.hdf5 *.pb")])
+        if path:
+            self.poison_target.delete(0, "end")
+            self.poison_target.insert(0, path)
+
+    def _run_poison(self):
+        path = self.poison_target.get().strip().strip('"')
+        if not path or not os.path.isfile(path):
+            messagebox.showwarning("缺少输入", "请选择存在的 AI 模型文件")
+            return
+        self.poison_out.delete("1.0", "end")
+        self.poison_out.insert("end", "正在静态扫描: %s\n\n" % path)
+        self.update_idletasks()
+        try:
+            from .ai_poison import analyze
+            res = analyze(path)
+        except Exception as exc:
+            self.poison_out.insert("end", "扫描失败: %s\n" % exc)
+            return
+        lines = ["判定: %s" % res["verdict"].upper(),
+                 "文件: %s  (%.1f MB)" % (res["file"], res["size"] / 1024 / 1024),
+                 "扩展名: %s" % res["ext"],
+                 "", "发现 %d 条记录:" % len(res["findings"])]
+        for f in res["findings"]:
+            sev = f.get("severity", "info")
+            lines.append("  [%s] %s: %s" % (sev.upper(), f.get("type"),
+                                             str(f.get("note") or f.get("pattern") or f.get("key") or "")))
+            if f.get("context"):
+                lines.append("       上下文: %s" % f["context"])
+            if f.get("inside_zip"):
+                lines.append("       (在压缩包内: %s)" % f["inside_zip"])
+        self.poison_out.insert("end", "\n".join(lines) + "\n")
 
     def _on_tab(self):
         builder = getattr(self, "_lazy_tabs", {}).pop(self.tabs.get(), None)

@@ -244,7 +244,7 @@ def build_web_wp(result, meta=None, workdir=""):
     return "\n".join(lines), data
 
 
-def _write_wp(md, data, meta, ws, kind):
+def _write_wp(md, data, meta, ws, kind, success=False):
     task_path = os.path.join(ws.dir, "wp.md")
     with open(task_path, "w", encoding="utf-8") as fp:
         fp.write(md)
@@ -258,13 +258,27 @@ def _write_wp(md, data, meta, ws, kind):
             fp.write(md)
     except Exception:
         copy_path = ""
-    return task_path, copy_path, data
+    # v4.0: 成功解出时，在软件根目录（exe 同级）也落一份 WP，方便用户直接找到
+    root_copy = ""
+    if success:
+        try:
+            from ..common import APP_DIR
+            cat = str(data.get("category") or kind)
+            root_name = "WP_%s_%s_%s.md" % (
+                cat, slug[:24] or "task", time.strftime("%Y%m%d_%H%M%S"))
+            root_path = os.path.join(APP_DIR, root_name)
+            with open(root_path, "w", encoding="utf-8") as fp:
+                fp.write(md)
+            root_copy = root_path
+        except Exception:
+            root_copy = ""
+    return task_path, copy_path, data, root_copy
 
 
 def write_web_wp(result, meta, ws):
-    """写入任务工作区 wp.md，并复制到 workspace/wp/ 供分发/归档。"""
+    """写入任务工作区 wp.md，并复制到 workspace/wp/；成功时额外在软件根目录落一份。"""
     md, data = build_web_wp(result, meta=meta, workdir=ws.dir)
-    return _write_wp(md, data, meta, ws, "web")
+    return _write_wp(md, data, meta, ws, "web", success=bool(result.get("success")))
 
 
 def _evidence_rows(evidence):
@@ -404,4 +418,4 @@ def build_file_wp(result, meta=None, workdir="", evidence=None):
 
 def write_file_wp(result, meta, ws, evidence=None):
     md, data = build_file_wp(result, meta=meta, workdir=ws.dir, evidence=evidence)
-    return _write_wp(md, data, meta, ws, "file")
+    return _write_wp(md, data, meta, ws, "file", success=bool(result.get("success")))

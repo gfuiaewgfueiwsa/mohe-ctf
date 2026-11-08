@@ -114,7 +114,7 @@ class AutoPilot:
             from ..ai.conductor import Conductor
             Conductor(log=self.ws.log).run(
                 kind=kind, ws=self.ws, saved=saved, raw=raw, category=category,
-                run=self._run, can_run=self._can_run)
+                run=self._run, can_run=self._can_run, url=url or "")
         except Exception as exc:
             try:
                 self.ws.log("[ai] conductor 跳过: %s" % str(exc)[:200], "warn")
@@ -610,7 +610,7 @@ class AutoPilot:
                     "candidates": [c.to_dict() for c in ranked],
                     "exploit": extra.get("exploit") or {},
                 }
-                task_wp, copy_wp, wp_data = write_web_wp(wp_result, self.meta, ws)
+                task_wp, copy_wp, wp_data, root_wp = write_web_wp(wp_result, self.meta, ws)
             else:
                 from .wp import write_file_wp
                 evidence = []
@@ -631,11 +631,14 @@ class AutoPilot:
                     "evidence_path": ws.evidence_path,
                     "log_path": ws.log_path,
                 }
-                task_wp, copy_wp, wp_data = write_file_wp(
+                task_wp, copy_wp, wp_data, root_wp = write_file_wp(
                     wp_result, self.meta, ws, evidence=evidence)
             extra["wp"] = task_wp
             if copy_wp:
                 extra["wp_copy"] = copy_wp
+            if root_wp:
+                extra["wp_root"] = root_wp
+                ws.notes.append("WP 已保存到软件目录：%s" % root_wp)
             extra["wp_format"] = wp_data.get("format")
             ws.notes.append("WP 已生成：%s" % task_wp)
         except Exception as exc:
