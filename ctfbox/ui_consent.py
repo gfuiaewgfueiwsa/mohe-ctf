@@ -11,7 +11,7 @@ try:
 except Exception:      # 极端情况（customtkinter 缺失）下仍要能弹出说明窗
     class _FallbackTheme:
         APP_NAME = "魔盒-ctf"
-        APP_VERSION = "v3.7.0"
+        APP_VERSION = "v4.0.0"
         BG_WINDOW = "#0d1117"
         BG_SURFACE = "#151b24"
         BG_SURFACE_2 = "#1a212c"

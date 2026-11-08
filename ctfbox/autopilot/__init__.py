@@ -8,5 +8,5 @@
 
 仅用于 CTF 靶场与用户已获授权的目标。
 """
-__version__ = "3.7.0"
-VERSION = "v3.7.0"
+__version__ = "4.0.0"
+VERSION = "v4.0.0"

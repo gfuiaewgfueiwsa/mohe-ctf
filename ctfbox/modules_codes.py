@@ -1024,11 +1024,28 @@ def detect_special(text: str):
             pass
     # 单字节 XOR（输入为 hex 时）
     try:
-        h = re.sub(r"[\s0x\\x]", "", text)
-        if len(h) % 2 == 0 and 16 <= len(h) <= 4096 and re.fullmatch(r"[0-9a-fA-F]+", h):
-            for k, val, sc in xor_single_crack(bytes.fromhex(h))[:2]:
+        h = text.strip()
+        # 只剥前导 0x / \x，不动中间的 0/x 字符
+        h = re.sub(r"^(0x|\\x)+", "", h)
+        h = re.sub(r"[\s\\x]", "", h)
+        if len(h) % 2 == 1:
+            h = h[:-1]
+        if 16 <= len(h) <= 4096 and re.fullmatch(r"[0-9a-fA-F]+", h):
+            for k, val, sc in xor_single_crack(bytes.fromhex(h))[:3]:
                 if sc > 6:
                     add(f"单字节XOR(key=0x{k:02x})", val)
+    except Exception:
+        pass
+    # 摩斯密码（.- 组合，空格分隔）
+    try:
+        compact = re.sub(r"\s", "", text)
+        if (len(compact) >= 4 and set(compact) <= set(".-/")
+                and compact.count("-") >= 2 and compact.count(".") >= 2
+                and "/" in text or (compact.count(".") + compact.count("-")) >= 8):
+            from .modules_text import morse_decode
+            decoded = morse_decode(text)
+            if decoded and readable_score(decoded) > 1:
+                add("摩斯密码", decoded)
     except Exception:
         pass
     # Base62（短链/URL 常用字母表 0-9A-Za-z，纯字母数字且非 base64 特征）
