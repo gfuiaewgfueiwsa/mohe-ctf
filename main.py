@@ -6,7 +6,7 @@
   魔盒-ctf.exe --rac "题目描述" [附件...]  RAC 自动化流水线（识别→匹配脚本→填参→执行→提取 flag）
   魔盒-ctf.exe --webauto <URL>   Web 自动化解题（只读、同源、限速的取证链）
   魔盒-ctf.exe --webattack <URL> Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
-  魔盒-ctf.exe --auto <文件|URL> [--deep] [--render]
+  魔盒-ctf.exe --auto <文件|URL> [--deep] [--render] [--ai]
                                       v3.7.0 一键梭哈（识别→反编译/密码试解/Web 全量利用→证据链→候选 flag）
   魔盒-ctf.exe --comp <memory|traffic|mobile|codeaudit|baseline|logtime|defense|compare> ...
                                       v3.7.0 赛事专项（离线取证/审计/加固基线，只生成不执行）
@@ -190,6 +190,7 @@ def run_v3_auto(args):
             "deep": "--deep" in args, "render": "--render" in args,
             "headless": "--headful" not in args,
             "exploit": "--exploit" in args,
+            "ai": True if "--ai" in args else None,
             "i_own": "--i-own-this-target" in args}
     hosts, target, user_data, cdp, consent_feature, ysoserial = [], "", "", "", "", ""
     hints = []
@@ -217,7 +218,7 @@ def run_v3_auto(args):
             skip = True
             continue
         if a in ("--allow-private", "--deep", "--render", "--headful", "--ctf-only",
-                 "--json", "--exploit", "--i-own-this-target"):
+                 "--json", "--exploit", "--ai", "--i-own-this-target"):
             continue
         if not target and not a.startswith("--"):
             target = a
@@ -234,7 +235,8 @@ def run_v3_auto(args):
                       opts["deep"], opts["render"], log=log,
                       user_data=user_data, cdp=cdp, headless=opts["headless"],
                       exploit=opts["exploit"], consent_feature=consent_feature,
-                      i_own=opts["i_own"], ysoserial=ysoserial, hints=hints)
+                      i_own=opts["i_own"], ysoserial=ysoserial, hints=hints,
+                      ai=opts["ai"])
     _print_result(result)
     return os.path.join(result.get("workdir", ""), "report.md")
 

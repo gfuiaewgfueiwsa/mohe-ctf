@@ -29,13 +29,13 @@ def run_auto(target: str, authorized: bool, allow_private: bool = False,
              log=None, user_data: str = "", cdp: str = "",
              headless: bool = True, exploit: bool = False,
              consent_feature: str = "", i_own: bool = False,
-             ysoserial: str = "", hints=None, meta=None) -> dict:
+             ysoserial: str = "", hints=None, meta=None, ai=None) -> dict:
     if ysoserial:
         os.environ["YSOSERIAL"] = os.path.abspath(ysoserial)
     pilot = AutoPilot(allow_private=allow_private, allow_hosts=allow_hosts,
                       deep=deep, render=render, log=log, exploit=exploit,
                       user_data=user_data, cdp=cdp, headless=headless,
-                      hints=hints, meta=meta)
+                      hints=hints, meta=meta, ai=ai)
     if is_url(target):
         return pilot.run_url(target)
     return pilot.run_file(os.path.abspath(target))
@@ -98,6 +98,8 @@ def main(argv=None):
     parser.add_argument("--ysoserial", default="", help="ysoserial-all.jar 路径（可选）")
     parser.add_argument("--hint", action="append", default=[],
                         help="题目名/描述等提示词（可重复）：用于过滤白名单绕过猜测")
+    parser.add_argument("--ai", action="store_true",
+                        help="启用内置本地小模型作为裁判（读报告选下一步工具/深度）")
     parser.add_argument("--json", action="store_true", help="输出完整 JSON")
     parser.add_argument("--version", action="version", version=VERSION)
     args = parser.parse_args(argv)
@@ -107,7 +109,7 @@ def main(argv=None):
                       cdp=args.cdp, headless=not args.headful,
                       exploit=args.exploit, consent_feature=args.consent,
                       i_own=args.i_own, ysoserial=args.ysoserial,
-                      hints=args.hint)
+                      hints=args.hint, ai=True if args.ai else None)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     else:

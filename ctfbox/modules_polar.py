@@ -496,35 +496,71 @@ def f5_extract_chain(path, rep, out_dir, passwords=("",)):
 # 7. 兽音译者变体（自定义四符号集）
 # ============================================================================
 def roar_variant_decode(text):
-    """识别由 4 个符号构成、长度为 4 倍数的兽音类密文，枚举符号映射解码。
-    返回可读结果字符串或 None。"""
-    # 取出现频率最高的 4 个非 ASCII/特殊符号
-    cand_syms = [c for c in set(text) if not c.isalnum() and c not in " \r\n\t，。、,.：:；;！!？?（）()【】[]\"'“”‘’"]
-    # 经典兽音头
-    for std_head, std_set in (("嗷呜啊呀", ["嗷", "呜", "啊", "呀"]),):
-        pass
+    """识别自定义四符号兽音类密文并枚举映射解码，返回可读字符串或 None。
+
+    真实兽音算法（roar.iiilab.com 系）：原文码点转 4 位十六进制，每位 hex
+    加位置偏移 n%16 后模 16，再拆成 2 个四进制符号（高位在前），常带头 3 尾 1。
+    解码即逆过程：每 2 符号还原 1 位 hex（减偏移），每 4 位 hex 还原 1 个码点。
+    符号集自定义（如 喵/呜/啊/~），故枚举 24 种映射、头尾长度与偏移方向。
+    """
+    from collections import Counter
+    # 1) 频率最高的 4 个非空白符号（CJK 安全：不能用 isalnum 过滤，呜/喵/啊 会被误判）
+    cnt = Counter(c for c in text if not c.isspace())
+    if len(cnt) < 4:
+        return None
+    top = [c for c, _ in cnt.most_common(4)]
+    symset = set(top)
+    total = sum(cnt.values())
+    if sum(cnt[c] for c in top) < total * 0.6:
+        return None
+    # 2) 最长纯符号连续段作为密文主体（避开引导语里孤立的杂散符号，保持对齐）
+    best_run, cur = "", []
+    for c in text:
+        if c in symset:
+            cur.append(c)
+        else:
+            if len(cur) > len(best_run):
+                best_run = "".join(cur)
+            cur = []
+    if len(cur) > len(best_run):
+        best_run = "".join(cur)
+    body = best_run
+    if len(body) < 8:
+        return None
+    # 3) 枚举映射 / 头尾 / 偏移方向，按真实算法解码并取可读性最高者
     best = None
-    # 只在符号数恰好为 4、且总数为 4 倍数时尝试
-    if len(cand_syms) == 4:
-        body = "".join(c for c in text if c in cand_syms)
-        if len(body) >= 8 and len(body) % 4 == 0:
-            for perm in itertools.permutations(range(4)):
-                mp = dict(zip(cand_syms, perm))
-                digits = [mp[c] for c in body]
-                out = bytearray()
-                for i in range(0, len(digits), 4):
-                    v = 0
-                    for d in digits[i:i + 4]:
-                        v = (v << 2) | d
-                    out.append(v)
-                try:
-                    s = bytes(out).decode("utf-8")
-                except Exception:
+    for perm in itertools.permutations(range(4)):
+        mp = dict(zip(top, perm))
+        digits = [mp[c] for c in body]
+        for head in range(0, 7):
+            for foot in range(0, 3):
+                inner = digits[head: len(digits) - foot if foot else len(digits)]
+                if len(inner) < 2 or len(inner) % 2:
                     continue
-                good = sum(1 for c in s if 32 <= ord(c) < 127 or ord(c) > 0x3000) / len(s)
-                if good > 0.9 and (re.search(r"[一-鿿A-Za-z{]", s)):
-                    if best is None or good > best[0]:
-                        best = (good, s)
+                for sign in (-1, 1):
+                    hexd = [((inner[n] * 4 + inner[n + 1]) + sign * ((n // 2) % 16)) % 16
+                            for n in range(0, len(inner), 2)]
+                    if len(hexd) % 4:
+                        continue
+                    out, ok = [], True
+                    for i in range(0, len(hexd), 4):
+                        cp = ((hexd[i] << 12) | (hexd[i + 1] << 8)
+                              | (hexd[i + 2] << 4) | hexd[i + 3])
+                        if cp > 0x10FFFF or 0xD800 <= cp <= 0xDFFF:
+                            ok = False
+                            break
+                        out.append(chr(cp))
+                    if not ok or not out:
+                        continue
+                    s = "".join(out)
+                    ascii_n = sum(1 for c in s if 32 <= ord(c) < 127)
+                    cjk_n = sum(1 for c in s if 0x4e00 <= ord(c) <= 0x9fff)
+                    readable = (ascii_n + cjk_n) / len(s)
+                    if readable > 0.9 and re.search(r"[一-鿿A-Za-z{]", s):
+                        # ASCII 加权优先：避免随机 CJK 垃圾与明文同分按枚举顺序抢占
+                        score = ascii_n * 2 + cjk_n
+                        if best is None or score > best[0]:
+                            best = (score, s)
     return best[1] if best else None
 
 

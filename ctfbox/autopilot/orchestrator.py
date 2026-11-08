@@ -55,8 +55,10 @@ class AutoPilot:
                  max_steps: int = 20, timeout: int = 300, log=None,
                  user_data: str = "", cdp: str = "", headless: bool = True,
                  exploit: bool = False, exploit_interval: float = 0.55,
-                 exploit_max_requests: int = 120, hints=None, meta=None):
+                 exploit_max_requests: int = 120, hints=None, meta=None,
+                 ai=None):
         self.hints = [str(h) for h in (hints or []) if h]
+        self.ai = ai
         self.meta = dict(meta or {})
         self.allow_private = allow_private
         self.allow_hosts = allow_hosts or []
@@ -100,6 +102,24 @@ class AutoPilot:
         for note in res.notes:
             self.ws.log(f"  - {note}", "note")
         return res
+
+    def _ai_conductor(self, kind, saved=None, raw=None, category="unknown",
+                      url=None, guard=None):
+        """可选：本地小模型作为裁判，在确定性流程收尾后补一次路由/深度决策。"""
+        try:
+            from ..ai import ai_enabled
+            enabled = self.ai if self.ai is not None else ai_enabled()
+            if not enabled or not self._can_run():
+                return
+            from ..ai.conductor import Conductor
+            Conductor(log=self.ws.log).run(
+                kind=kind, ws=self.ws, saved=saved, raw=raw, category=category,
+                run=self._run, can_run=self._can_run)
+        except Exception as exc:
+            try:
+                self.ws.log("[ai] conductor 跳过: %s" % str(exc)[:200], "warn")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     def run_file(self, path: str) -> dict:
@@ -348,6 +368,7 @@ class AutoPilot:
             extra["ghidra_output"] = ghidra_res.data.get("out_path")
         if crypto_res and crypto_res.ok:
             extra["crypto_attempts"] = crypto_res.data.get("attempts", 0)
+        self._ai_conductor("file", saved=saved, raw=raw, category=category)
         return self._finalize("file", path, extra)
 
     # ------------------------------------------------------------------
@@ -458,6 +479,7 @@ class AutoPilot:
                     if not caps.get("php_ok"):
                         ws.notes.append("PHP 反序列化：未找到 php，phar 只做结构与签名校验；"
                                         + (caps.get("install_hints") or {}).get("php", ""))
+        self._ai_conductor("web", url=url, guard=guard)
         return self._finalize("web", url, extra)
 
     # ------------------------------------------------------------------

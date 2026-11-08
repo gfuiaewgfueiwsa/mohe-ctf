@@ -17,7 +17,7 @@
 | `version_info.txt` | PE 版本资源（3.7.0.0，中英双 StringTable） |
 | `_mirror_webtools.py` | 内置 Web 工具导航数据生成 |
 | `scripts\library\` | 88 个脚本与速查表（69 个 Python 脚本），既是功能素材也是 RAC 装配源 |
-| `tests\` | 单测与本地靶站；全量 95 项 |
+| `tests\` | 单测与本地靶站；全量 110 项 |
 | `docs\` | 当前架构与交付验证记录 |
 | `samples\` | 示例输入占位，打包时随包进 `_internal` 再挪到 exe 同级 |
 | `tools\` | **目录联接（Junction）**，指向 `..\魔盒-ctf\tools`，不是 3 GB 副本 |
@@ -49,6 +49,17 @@ build.bat
 
 分发时把 `dist\CTFToolbox\` 整体复制为 `魔盒-ctf\`，可执行文件为 `CTFToolbox.exe`，成品目录同时保留一份 `魔盒-ctf.exe` 同名副本。
 
+本地模型裁判的模型与运行时**不由 PyInstaller 打包**，直接放在成品根目录：
+
+```
+models/qwen2.5-3b-instruct-abliterated-q4_k_m.gguf   1.93GB，溯源见 models/README-provenance.md
+runtime/llama/cuda/llama-server.exe + CUDA 13.5 依赖   NVIDIA 显卡加速
+runtime/llama/cpu/llama-server.exe                     无显卡或驱动不匹配时回退
+ai_config.json                                         开关、上下文、决策次数与端口
+```
+
+源码仓库不包含这三项（模型超出 GitHub 单文件限制）；运行时缺失时程序静默回退确定性流程。
+
 ## 从源码直接运行
 
 ```
@@ -65,12 +76,12 @@ GUI 每次启动展示《软件责任说明》，勾选同意后进入；CLI 首
 D:\PY\python.exe -m unittest discover -s tests -v
 ```
 
-v3.7.0 全量回归 **95 tests OK**。覆盖范围包括：责任闸门、首层判型、AutoPilot 文件/Web 链、Web 利用与审计、加密 ZIP 与密码型隐写、异常曲线 HNP、赛事专项八个模式、平台适配、RAC 装配与脚本库预检。Web 相关用例只拉起 `127.0.0.1` 本地靶站，不访问外部目标。
+v3.7.0 全量回归 **110 tests OK**。覆盖范围包括：责任闸门、首层判型、AutoPilot 文件/Web 链、Web 利用与审计、加密 ZIP 与密码型隐写、兽音变体解码、AI 裁判 11 项、异常曲线 HNP、赛事专项八个模式、平台适配、RAC 装配与脚本库预检。Web 相关用例只拉起 `127.0.0.1` 本地靶站，不访问外部目标。
 
 ## 已发布状态
 
 - 成品 `魔盒-ctf.exe` / `CTFToolbox.exe`：PE 版本 **3.7.0.0**，2026-11-08 构建，24,974,643 字节。
-- 全量单测 95 项通过；CLI 责任闸门、平台列表、打包产物冒烟均已实测。
+- 全量单测 110 项通过；CLI 责任闸门、平台列表、打包产物冒烟均已实测。
 - 源码、测试与文档同步到 GitHub `gfuiaewgfueiwsa/mohe-ctf`（`tools/`、`dist/`、`workspace/` 不入库）。
 
 ## 不要放进来的东西

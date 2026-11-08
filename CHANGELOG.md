@@ -11,6 +11,8 @@
 - **唯一责任闸门** `ctfbox/responsibility.py`：版本化说明文本 + SHA-256，确认记录写入 `workspace/config/responsibility.json`；版本变化后旧确认自动失效；`ensure_cli()` 在 CLI 入口统一拦截。
 - **启动责任说明窗** `ctfbox/ui_consent.py`：780×620 深色说明窗，必须勾选「我已逐条阅读并同意」才能启用「同意并进入」；拒绝/关闭窗口退出；内置「阅读使用说明」。
 - **测试** `tests/test_responsibility_v37.py`：CLI 未同意拦截、`--accept-responsibility` 放行与落盘、版本失效、撤销、条款关键字。
+- **本地模型裁判** `ctfbox/ai/`：内置 `Qwen2.5-3B-Instruct-abliterated` Q4_K_M（1.93 GB，魔搭 `huihui-ai`，apache-2.0）与 llama.cpp 运行时（CUDA 13.5 / CPU）。AutoPilot 收尾后按工作区状态在固定动作白名单内选择下一步与深度，GBNF 强制 JSON、白名单二次校验、按目标类型限制可选动作（zip 只解压、图片才隐写、PE/ELF 才反编译），重复/越界/不匹配决策跳过，最多 3 次；模型不可用时静默回退。GUI 新增「本地模型裁判」勾选，CLI 新增 `--ai`，配置见 `ai_config.json` 与 `MOHE_AI_*` 环境变量。
+- **测试** `tests/test_ai_conductor_v37.py`：语法枚举、合法 JSON、未知动作与非 JSON 拒绝、depth 钳制、stop、状态入提示词、目标收集、默认关闭。
 
 ### 修复
 
@@ -27,7 +29,8 @@
 
 ### 验证
 
-- 全量单测 **95 tests OK**（含新增责任闸门测试、责任说明窗布局回归与更新后的 scope/consent 回归）。
+- 全量单测 **110 tests OK**（含新增责任闸门测试、责任说明窗布局回归、兽音变体解码回归、AI 裁判 11 项与更新后的 scope/consent 回归）。
+- 修复兽音变体解码：改用真实兽音算法（码点→hex→位置偏移→四进制符号），CJK 符号集不再被 `isalnum` 误过滤，并按 ASCII 优先评分避免随机 CJK 抢占。
 - CLI 实测：未同意时 `--comp` 退出 2 并打印责任说明；加 `--accept-responsibility` 后退出 0，`workspace/config/responsibility.json` 写入确认记录。
 - 无逐工具声明时 AutoPilot 直接进入 Web 利用链（本机靶站 48 次请求、5 项发现、5 个验证样本），审计与限速正常。
 - 构建：PyInstaller onedir 成功，成品 PE 版本 3.7.0.0（约 24.9 MB）；责任说明页与主界面截图见 `docs/交付与验证.md`。
