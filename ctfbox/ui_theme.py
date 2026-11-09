@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""魔盒-ctf 统一视觉主题。
+"""魔盒-CTF 统一视觉主题。
 
 原先配色、字号、圆角散落在 ui_main / ui_web / ui_media / ui_rac / ui_scripts /
 ui_ssh / ui_consent 各页面里，同一语义（危险、成功、提示）在不同页面颜色不一致，
@@ -79,8 +79,14 @@ FONT_SMALL = 11
 FONT_TITLE = 14
 FONT_H1 = 18
 
-APP_NAME = "魔盒-ctf"
-APP_VERSION = "v4.0.0"
+try:                                   # 版本号/产品名单一来源，禁止在此硬编码
+    from .versioning import APP_NAME as _APP_NAME
+    from .versioning import version_tag as _version_tag
+    APP_NAME = _APP_NAME
+    APP_VERSION = _version_tag()
+except Exception:                      # pragma: no cover - 极端导入失败兜底
+    APP_NAME = "魔盒-CTF"
+    APP_VERSION = "v4.1.0"
 APP_SUBTITLE = "万能 CTF 集合工具箱 · 七模块一键梭哈 · 本地AI可开关 · 全自动WP生成"
 
 # ======================================================================

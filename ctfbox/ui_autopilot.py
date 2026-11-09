@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v3.7.0「一键梭哈」标签页：串起识别→静态分析→编码/异或→对称密码→Web 利用→证据链→结论。"""
+"""「一键梭哈」标签页：串起识别→静态分析→编码/异或→对称密码→Web 利用→证据链→结论。"""
 import os
 import queue
 import threading
@@ -10,7 +10,7 @@ import customtkinter as ctk
 
 from . import ui_theme as theme
 
-VERSION_TAG = "v4.0.0"
+VERSION_TAG = theme.APP_VERSION
 
 # v4.0 七大梭哈模块（密码单独保留）
 _MODULES = [
@@ -39,7 +39,7 @@ class AutoPilotTab(ctk.CTkFrame):
         # v4.0: 警告/说明统一挪到「使用说明」页，本页不再堆说明文字
         top = theme.card(self)
         top.pack(fill="x", padx=10, pady=(10, 4))
-        theme.section(top, "一键梭哈", "v4.0.0 · 文件或 URL · 七模块自动分流",
+        theme.section(top, "一键梭哈", VERSION_TAG + " · 文件或 URL · 七模块自动分流",
                       padx=14, pady=(12, 6))
 
         # v4.0: 七大模块选择卡片（点选作为 hint，留空则自动判型）

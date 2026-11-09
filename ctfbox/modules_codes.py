@@ -892,6 +892,116 @@ def dangpu_decode(text: str) -> str:
     return digits + "\n（数字串，通常需按手机键盘/ASCII 等继续转换）"
 
 
+MULTITAP_KEYS = {"2": "ABC", "3": "DEF", "4": "GHI", "5": "JKL",
+                 "6": "MNO", "7": "PQRS", "8": "TUV", "9": "WXYZ"}
+
+# 常见英文词表（CTF 明文里高频出现的那批），只用于给 multi-tap 候选排序。
+_MT_WORDS = ("the", "and", "this", "that", "with", "have", "was", "are", "you", "for",
+             "not", "but", "all", "any", "one", "two", "three", "key", "keys", "code",
+             "flag", "ctf", "old", "new", "time", "phone", "number", "num", "letter",
+             "word", "is", "it", "of", "to", "in", "on", "at", "be", "as", "or", "an",
+             "ancient", "modern", "first", "last", "long", "short", "good", "bad",
+             "easy", "hard", "simple", "just", "like", "very", "much", "many", "more",
+             "most", "other", "some", "such", "than", "then", "there", "these", "those",
+             "what", "when", "where", "which", "who", "why", "how", "can", "will",
+             "would", "should", "could", "made", "make", "get", "got", "let", "put",
+             "sign", "find", "look", "use", "used", "using", "start", "stop", "open",
+             "close", "left", "right", "over", "under", "again", "once", "only", "also",
+             "still", "even", "ever", "never", "always", "often", "here", "about")
+
+
+def _mt_score(text):
+    """给一个 multi-tap 拆分结果打分：像英文词越多、元音分布越正常越高。"""
+    letters = "".join(c for c in text.lower() if "a" <= c <= "z")
+    if not letters:
+        return -1e9
+    score = _common_letter_score(letters) * 2.0
+    words = [w for w in re.split(r"[^a-z]+", text.lower()) if len(w) >= 2]
+    score += 3.0 * sum(1 for w in words if w in _MT_WORDS)
+    run = 0
+    for c in letters:
+        if c in "aeiouy":
+            run = 0
+        else:
+            run += 1
+            if run >= 4:
+                score -= 1.5
+    # 叠字母在英文里很少（尤其 aa/gg/ii 这类），而 multi-tap 的拆分歧义几乎总是
+    # 「把一个连按拆成两个同字母」造成的，所以叠字母要罚。
+    dbl = sum(1 for i in range(1, len(letters)) if letters[i] == letters[i - 1])
+    score -= 2.5 * dbl
+    # 简约优先：同一段连按，能一次按到底出一个字母的拆法，比拆成两三个字母更常见
+    # （"222"→C 而不是 A+A）。每多拆出一个字母就实打实地扣分，归一化会把差异抹平。
+    segs = [mo.group(0) for mo in re.finditer(r"([2-9])\1*", text or "")]
+    if segs:
+        score -= 1.5 * max(0, len(letters) - len(segs))
+    return score
+
+
+def _mt_run_options(digit, count):
+    """同一数字连按 count 次的所有合法拆法：每段 1..键长 次对应键上一个字母。
+
+    连按次数超过键上的字母数时要「回到开头重新数」，所以 "44444" 既可能是
+    一个字母（H→I→G→H→I 数到底再绕），也可能是 H+I、G+H、I+H 等组合，
+    这就是 multi-tap 解码天生有歧义、必须靠英文打分排序的原因。
+    """
+    alpha = MULTITAP_KEYS[digit]
+    n = len(alpha)
+    out = []
+
+    def walk(rem, acc):
+        if len(out) >= 64:
+            return
+        if rem == 0:
+            out.append("".join(acc))
+            return
+        for k in range(1, min(n, rem) + 1):
+            acc.append(alpha[(k - 1) % n])
+            walk(rem - k, acc)
+            acc.pop()
+
+    walk(count, [])
+    return out
+
+
+def multitap_word_hits(text):
+    """解码结果里落在英文词表上的 token 数——用来区分「同一段数字的两种拆法」。
+
+    multi-tap 天生有歧义，同一题面给两个数字串时（t9 原题就写了 "alternatively"），
+    靠这个计数才能判断哪个才是真正的明文：THIS_PHONE_IS_ANCIENT 命中 this/is/phone/ancient，
+    而 THIR_PHONE_IR_ANCIENT 只命中 phone。
+    """
+    toks = [w for w in re.split(r"[^A-Za-z]+", text or "") if len(w) >= 2]
+    return sum(1 for w in toks if w.lower() in _MT_WORDS)
+
+
+def multitap_decode(text, top=12, beam=400):
+    """手机九键（multi-tap）解码：数字串 → 按「像英文」排序的候选串列表。
+
+    `dangpu_decode` 之类的链路最后只能产出「数字串，通常需按手机键盘继续转换」这句
+    提示就断了；这里把那一步真的做掉。非 2-9 的字符（`{`、`}`、`_`、空格）原样保留，
+    同一段连续相同数字做拆分歧义搜索， beam search 控制规模。
+    """
+    tokens = []
+    for mo in re.finditer(r"([2-9])\1*|[^2-9]+", text or ""):
+        s = mo.group(0)
+        if len(set(s)) == 1 and s[0] in MULTITAP_KEYS:
+            tokens.append(("run", s))
+        else:
+            tokens.append(("lit", s))
+    states = [""]
+    for kind, val in tokens:
+        if kind == "lit":
+            states = [st + val for st in states]
+            continue
+        opts = _mt_run_options(val[0], len(val))
+        states = [st + o for st in states for o in opts]
+        states.sort(key=lambda s: -_mt_score(s))
+        del states[beam:]
+    ranked = sorted(set(states), key=lambda s: -_mt_score(s))
+    return [r for r in ranked[:top] if any(c.isalpha() for c in r)]
+
+
 # ============================================================================
 # JWT 解码 / 弱密钥爆破 / Flask session
 # ============================================================================

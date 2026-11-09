@@ -18,6 +18,7 @@ import time
 from typing import List
 
 from ..common import WORKSPACE, safe_name
+from . import __version__ as APP_VERSION
 from .models import Candidate, jsonable
 
 
@@ -120,7 +121,7 @@ class TaskWorkspace:
     def finalize(self, extra: dict = None) -> dict:
         self.finished = time.strftime("%Y-%m-%d %H:%M:%S")
         result = {
-            "version": "3.7.0",
+            "version": APP_VERSION,
             "kind": self.kind,
             "name": self.name,
             "workdir": self.dir,

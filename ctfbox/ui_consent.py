@@ -6,12 +6,18 @@
 """
 import tkinter as tk
 
+try:                                   # 版本号单一来源，禁止在此硬编码
+    from .versioning import version_tag as _version_tag
+    _FALLBACK_VERSION = _version_tag()
+except Exception:                      # pragma: no cover
+    _FALLBACK_VERSION = "v4.1.0"
+
 try:
     from . import ui_theme as theme
 except Exception:      # 极端情况（customtkinter 缺失）下仍要能弹出说明窗
     class _FallbackTheme:
-        APP_NAME = "魔盒-ctf"
-        APP_VERSION = "v4.0.0"
+        APP_NAME = "魔盒-CTF"
+        APP_VERSION = _FALLBACK_VERSION
         BG_WINDOW = "#0d1117"
         BG_SURFACE = "#151b24"
         BG_SURFACE_2 = "#1a212c"
@@ -37,7 +43,7 @@ except Exception:      # 极端情况（customtkinter 缺失）下仍要能弹�
     theme = _FallbackTheme()
 
 
-USAGE_TEXT = """魔盒-ctf 使用说明（摘要）
+USAGE_TEXT = """魔盒-CTF 使用说明（摘要）
 
 一、进入软件
 启动时展示《软件责任说明》，必须勾选同意才能进入；不同意或关闭窗口直接退出。
@@ -157,11 +163,11 @@ class ConsentDialog(tk.Tk):
             return
         from tkinter.scrolledtext import ScrolledText
         window = self.usage_window = tk.Toplevel(self)
-        window.title("魔盒-ctf 使用说明")
+        window.title("魔盒-CTF 使用说明")
         window.geometry("860x640")
         window.transient(self)
         window.configure(bg=theme.BG_WINDOW)
-        tk.Label(window, text="魔盒-ctf 使用说明", font=(theme.ui_family_safe(), 14, "bold"),
+        tk.Label(window, text="魔盒-CTF 使用说明", font=(theme.ui_family_safe(), 14, "bold"),
                  bg=theme.BG_WINDOW, fg=theme.TEXT).pack(anchor="w", padx=16, pady=(14, 6))
         text = ScrolledText(window, wrap="word", font=(theme.ui_family_safe(), 11),
                             bg=theme.BG_EDITOR, fg=theme.TEXT, insertbackground=theme.TEXT,

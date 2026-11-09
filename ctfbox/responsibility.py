@@ -18,7 +18,7 @@ RESPONSIBILITY_VERSION = "1"
 CONFIG_DIR = os.path.join(WORKSPACE, "config")
 RESPONSIBILITY_PATH = os.path.join(CONFIG_DIR, "responsibility.json")
 
-RESPONSIBILITY_TEXT = """魔盒-ctf 软件责任说明（进入前必须阅读并同意）
+RESPONSIBILITY_TEXT = """魔盒-CTF 软件责任说明（进入前必须阅读并同意）
 
 一、授权与合法使用
 1. 我确认：我对使用本软件测试的每一个目标，均已取得明确、合法、有效的授权

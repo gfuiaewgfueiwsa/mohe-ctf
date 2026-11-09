@@ -1,4 +1,6 @@
-# 魔盒-ctf 万能 CTF 集合工具箱 v3.7.0
+# 魔盒-CTF 万能 CTF 集合工具箱 v4.1.0
+
+> 命名规范：产品名统一写作 **`魔盒-CTF`**（`CTF` 全大写），完整名为 **`魔盒-CTF v4.1.0`**。主程序按版本命名 `魔盒-CTFv4.1.0.exe`，同时提供 `魔盒-CTF.exe` 硬链接（同一文件），分发目录同名。
 
 面向 **CTF 比赛 / 合法安全实验 / 电子数据取证练习** 的 Windows 桌面工具箱。
 拖入任意后缀的文件或输入题目地址，软件自动识别类型、选择分析阶段、调用随包工具与脚本，递归下钻嵌套内容，直到找到 flag 或给出下一步线索。
@@ -25,16 +27,16 @@
 
 | 命令 | 说明 |
 | --- | --- |
-| `魔盒-ctf.exe` | 启动 GUI（首次进入须同意《软件责任说明》） |
-| `魔盒-ctf.exe --cli <文件> [文件...]` | 批量附件分析，报告写入 `workspace/cli_report.txt` |
-| `魔盒-ctf.exe --auto <文件\|URL> [--exploit] [--deep] [--render] [--ai]` | 一键梭哈；文件类输出 WP 与证据链；`--ai` 启用本地模型裁判 |
-| `魔盒-ctf.exe --comp <memory\|traffic\|mobile\|codeaudit\|baseline\|logtime\|defense\|compare> ...` | 赛事专项，离线分析与只生成脚本/用例 |
-| `魔盒-ctf.exe --platform polarctf --list [--category WEB]` | 平台题目列表 |
-| `魔盒-ctf.exe --platform polarctf --solve <题目ID>` | 开实例 → 一键梭哈 → 提交 → 输出 WP |
-| `魔盒-ctf.exe --rac "题目描述" [附件...]` | RAC 题目流水线，报告写入 `workspace/rac_cli_report.txt` |
-| `魔盒-ctf.exe --webauto <URL>` | 只读 Web 取证（轻量） |
-| `魔盒-ctf.exe --webattack <URL>` | 深度 Web 全自动（页面分析 + payload 矩阵 + 上传测试） |
-| `魔盒-ctf.exe --pwn <ELF> [--host H --port P --offset N]` | ELF 静态定位与 ret2win 闭环 |
+| `魔盒-CTF.exe` | 启动 GUI（首次进入须同意《软件责任说明》） |
+| `魔盒-CTF.exe --cli <文件> [文件...]` | 批量附件分析，报告写入 `workspace/cli_report.txt` |
+| `魔盒-CTF.exe --auto <文件\|URL> [--exploit] [--deep] [--render] [--ai]` | 一键梭哈；文件类输出 WP 与证据链；`--ai` 启用本地模型裁判 |
+| `魔盒-CTF.exe --comp <memory\|traffic\|mobile\|codeaudit\|baseline\|logtime\|defense\|compare> ...` | 赛事专项，离线分析与只生成脚本/用例 |
+| `魔盒-CTF.exe --platform polarctf --list [--category WEB]` | 平台题目列表 |
+| `魔盒-CTF.exe --platform polarctf --solve <题目ID>` | 开实例 → 一键梭哈 → 提交 → 输出 WP |
+| `魔盒-CTF.exe --rac "题目描述" [附件...]` | RAC 题目流水线，报告写入 `workspace/rac_cli_report.txt` |
+| `魔盒-CTF.exe --webauto <URL>` | 只读 Web 取证（轻量） |
+| `魔盒-CTF.exe --webattack <URL>` | 深度 Web 全自动（页面分析 + payload 矩阵 + 上传测试） |
+| `魔盒-CTF.exe --pwn <ELF> [--host H --port P --offset N]` | ELF 静态定位与 ret2win 闭环 |
 
 CLI 首次使用需加 `--accept-responsibility`；确认结果持久化后不再要求。兼容参数 `--ctf-only`、`--consent web-exploit`、`--i-own-this-target` 可以照常传入，但不再改变行为。
 
@@ -48,7 +50,7 @@ CLI 首次使用需加 `--accept-responsibility`；确认结果持久化后不�
 main.py                 启动入口（GUI / CLI 各模式统一先过责任说明闸门）
 CTFToolbox.spec         PyInstaller 打包配置（输出名 CTFToolbox.exe）
 build.bat               一键打包脚本
-version_info.txt        Windows PE 版本资源（3.7.0.0）
+version_info.txt        Windows PE 版本资源（4.1.0.0）
 _mirror_webtools.py     内置 Web 工具导航数据生成
 ctfbox/                 核心包：dispatcher、identifier、各 modules_*、ui_*、toolsmgr、web*
 ctfbox/autopilot/       一键梭哈编排：triage、workspace、scope、sandbox、audit、exploit/、tools/、orchestrator、wp
@@ -76,7 +78,7 @@ GUI 基于 `customtkinter`。打包依赖见 `CTFToolbox.spec`：
 
 1. 安装上述依赖与 `pyinstaller`（`build.bat` 默认使用 `D:\PY\python.exe`，按需修改解释器路径）。
 2. 准备 `tools/portable` 与 `tools/runtime`（Ghidra、jadx、ffmpeg、JDK、Node、独立 Python 等）。
-3. 执行 `build.bat`，产物在 `dist/CTFToolbox/CTFToolbox.exe`；脚本会把 `tools`、`samples`、`scripts`、`使用说明.md`、`卸载魔盒-ctf.bat` 整理到 exe 同级。分发时复制/重命名为 `魔盒-ctf.exe`。
+3. 执行 `build.bat`，产物在 `dist/CTFToolbox/CTFToolbox.exe`；脚本会把 `tools`、`samples`、`scripts`、`使用说明.md`、`卸载魔盒-CTF.bat` 整理到 exe 同级。分发时复制/重命名为 `魔盒-CTF.exe`。
 
 ## 未随仓库发布的内容
 

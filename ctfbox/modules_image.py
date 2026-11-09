@@ -26,8 +26,32 @@ def analyze(path, report: Report, passwords=None):
     try:
         img = Image.open(path)
     except Exception as e:
-        report.add("warn", "图片无法打开", str(e))
-        return
+        # v4.0.4：PNG 宽高被改坏导致无法打开 → IHDR CRC 爆破修复后重开（经典"图片宽高"题）
+        img = None
+        if path.lower().endswith(".png"):
+            try:
+                with open(path, "rb") as _f:
+                    _raw0 = _f.read()
+                _pos = _raw0.find(b"IHDR") - 4
+                if _pos >= 0:
+                    _fixed = _fix_ihdr_crc(_raw0, _pos)
+                    if _fixed:
+                        _od = os.path.join(
+                            WORKSPACE, "image_" + os.path.basename(path).replace(".", "_"))
+                        os.makedirs(_od, exist_ok=True)
+                        _fp = os.path.join(_od, "fixed_" + os.path.basename(path))
+                        with open(_fp, "wb") as _f2:
+                            _f2.write(_fixed)
+                        report.add("ok", "PNG 宽高被改：IHDR CRC 爆破修复成功",
+                                   _fp + "（按修复副本继续分析）", _fp)
+                        report.extracted.append(_fp)
+                        img = Image.open(_fp)
+                        path = _fp
+            except Exception:
+                img = None
+        if img is None:
+            report.add("warn", "图片无法打开", str(e))
+            return
 
     with open(path, "rb") as f:
         raw = f.read()
@@ -95,8 +119,23 @@ def _exif(img, report, outdir=None):
         lines.append("GPSInfo: " + "; ".join(f"{k}={v}" for k, v in gps.items()))
     if lines:
         report.add("ok", "EXIF 元数据", "\n".join(str(x) for x in lines))
-        for fl in scan_flags("\n".join(lines).encode("utf-8", "ignore")):
+        joined = "\n".join(lines)
+        for fl in scan_flags(joined.encode("utf-8", "ignore")):
             report.add("flag", "EXIF 中发现 flag", fl)
+        # v4.0.4：UTF-16 编码的 EXIF 字段（XPComment/XPTitle/XPAuthor 等常藏 flag）。
+        # repr 里表现为大量 \x00，先去掉字面转义再扫；同时按 bytes 原值做 UTF-16 解码。
+        for fl in scan_flags(re.sub(r"\\x00", "", joined).encode("utf-8", "ignore")):
+            report.add("flag", "EXIF 中发现 flag(UTF-16)", fl)
+        for _tid, _val in exif.items():
+            if not isinstance(_val, bytes) or len(_val) < 6:
+                continue
+            for _enc in ("utf-16-le", "utf-16-be", "utf-8"):
+                try:
+                    _t = _val.decode(_enc, errors="ignore")
+                except Exception:
+                    continue
+                for fl in scan_flags(_t.encode("utf-8", "ignore")):
+                    report.add("flag", "EXIF 字段中发现 flag", fl)
     # PIL 注释
     try:
         info = img.info
@@ -312,6 +351,37 @@ def _appended(raw, fmt, report, outdir):
         report.extracted.append(fp)
         for fl in scan_flags(tail):
             report.add("flag", "附加数据中发现 flag", fl)
+        # v4.0.4：UTF-16 编码的附加数据（截图/记事本文本常为 UTF-16LE）
+        for _enc in ("utf-16-le", "utf-16-be"):
+            try:
+                _t = tail.decode(_enc, errors="ignore")
+            except Exception:
+                continue
+            for fl in scan_flags(_t.encode("utf-8", "ignore")):
+                report.add("flag", "附加数据中发现 flag(UTF-16)", fl)
+        # v4.0.4：附加数据是压缩包（"图种"经典题：图片尾部拼接 ZIP）→ 直接解包扫成员 flag
+        if tail[:2] == b"PK" or tail[:4] == b"Rar!" or tail[:6] == b"7z\xbc\xaf\x27\x1c":
+            try:
+                import io as _io
+                import zipfile as _zf
+                with _zf.ZipFile(_io.BytesIO(tail)) as _z:
+                    for _nm in _z.namelist()[:30]:
+                        try:
+                            _data = _z.read(_nm)
+                        except Exception:
+                            continue
+                        for fl in scan_flags(_data):
+                            report.add("flag", "图种内嵌压缩包成员 %s 中发现 flag" % _nm, fl)
+                        for _enc in ("utf-16-le", "utf-16-be"):
+                            try:
+                                _t = _data.decode(_enc, errors="ignore")
+                            except Exception:
+                                continue
+                            for fl in scan_flags(_t.encode("utf-8", "ignore")):
+                                report.add("flag", "图种内嵌压缩包成员 %s 中发现 flag" % _nm, fl)
+                report.add("ok", "图种内嵌压缩包", "已解出成员并扫描 flag（%d 个成员）" % len(_z.namelist()))
+            except Exception as _e:
+                report.add("info", "图种内嵌压缩包", "尝试解包失败：%s" % _e)
 
 # ----------------------------------------------------------------------------
 # GIF 帧拆分

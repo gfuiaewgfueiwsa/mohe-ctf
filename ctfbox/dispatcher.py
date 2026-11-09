@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """一把梭调度器：识别 -> 分流分析 -> 雕刻/字符串 -> 递归。"""
+import hashlib
 import os
 import re
 import sys
 import json
 import sqlite3
 import subprocess
-from .common import (Report, WORKSPACE, file_hashes, human_size, scan_flags,
-                     extract_strings, try_decode_text)
+from .common import (Report, WORKSPACE, file_hashes, human_size, new_run_dir,
+                     scan_flags, extract_strings, try_decode_text)
 from . import identifier
 from . import modules_text
 from . import modules_image
@@ -107,7 +108,15 @@ class Dispatcher:
         rep = Report(path=path, category=info.category, ftype=info.ftype)
         self.log(f"{indent}[+] {os.path.basename(path)} -> {info.ftype} (熵 {info.entropy:.3f}, {human_size(info.size)})")
 
-        outdir = os.path.join(WORKSPACE, "out_" + re.sub(r"[^\w.-]", "_", os.path.basename(path))[:40] + f"_{abs(hash(path)) % 0xffff:04x}")
+        # 产物目录名用「文件名 + 路径摘要」：必须是稳定值。
+        # 旧实现用 abs(hash(path))，PYTHONHASHSEED 随机化会让同一文件每次新建目录，
+        # 长期累积出上万目录；同名不同路径的文件也不会互相覆盖。
+        stem = re.sub(r"[^\w.-]", "_", os.path.basename(path))[:40]
+        try:
+            tag = hashlib.md5(os.path.abspath(path).encode("utf-8", "replace")).hexdigest()[:6]
+        except Exception:
+            tag = "000000"
+        outdir = os.path.join(new_run_dir("out"), "%s_%s" % (stem, tag))
         os.makedirs(outdir, exist_ok=True)
 
         # 基础信息
@@ -320,7 +329,7 @@ class Dispatcher:
                                        outdir or os.path.join(os.path.dirname(path) or ".", "codeaudit"))
             except Exception as e:
                 rep.add("info", "代码审计跳过", str(e)[:160])
-        tx_out = os.path.join(WORKSPACE, "polar_" + re.sub(r"[^\w.-]", "_", os.path.basename(path))[:30])
+        tx_out = os.path.join(new_run_dir("polar"), "polar_" + re.sub(r"[^\w.-]", "_", os.path.basename(path))[:30])
         # Web 访问日志（access.log / nginx / IIS 等）
         try:
             log_hits = len(re.findall(r'(?:GET|POST|PUT|DELETE|HEAD|OPTIONS)\s+\S+\s+HTTP/', text))

@@ -10,6 +10,7 @@ import re
 import stat
 
 from . import util
+from ..versioning import APP_VERSION
 
 AUDIT_GUIDS = {
     "Logon": "0CCE9215-69AE-11D9-BED3-505054503030",
@@ -889,13 +890,14 @@ def _write_scripts(outdir, result):
             ("rollback_windows.ps1", WIN_ROLLBACK, _validate_ps1),
             ("harden_linux.sh", LINUX_HARDEN, _validate_sh),
             ("rollback_linux.sh", LINUX_ROLLBACK, _validate_sh)):
+        content = content.replace("v3.7.0", APP_VERSION)
         path = util.save_text(outdir, name, content)
         util.add_artifact(result, path)
         chk = validator(path)
         result["data"].setdefault("script_checks", {})[name] = chk
         scripts[name] = path
     readme = (
-        "MoHe CTF v3.7.0 baseline scripts (GENERATED ONLY)\n"
+        "MoHe CTF " + APP_VERSION + " baseline scripts (GENERATED ONLY)\n"
         "================================================\n"
         "These scripts were NOT executed by the analyzer.\n"
         "Review every command before use; run as Administrator/root on the target host.\n"

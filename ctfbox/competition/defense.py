@@ -13,6 +13,7 @@ import os
 import time
 
 from . import util
+from ..versioning import APP_VERSION
 
 WAF_CHECKS = [
     {"id": "waf-deploy", "severity": "high", "category": "部署",
@@ -314,7 +315,7 @@ NGFW_PROBES = [
 
 BEFORE_AFTER_TEMPLATE = """# 加固前后对比报告（模板）
 
-> 本模板由魔盒-ctf v3.7.0 生成，仅提供结构与占位符；请填入真实证据后归档。
+> 本模板由魔盒-CTF v3.7.0 生成，仅提供结构与占位符；请填入真实证据后归档。
 
 ## 1. 基本信息
 - 系统 / 业务：
@@ -419,7 +420,7 @@ def _write_probes(outdir, result, canary):
     http_path = os.path.join(outdir, "artifacts", "defense_probes.http")
     os.makedirs(os.path.dirname(http_path), exist_ok=True)
     lines = [
-        "# 魔盒-ctf WAF 检测用例（仅生成，未发送）",
+        "# 魔盒-CTF WAF 检测用例（仅生成，未发送）",
         "# 只允许在自有 staging / CTF 靶场人工执行；不要指向生产或未授权目标。",
         "# 将 baseUrl 改为你的授权测试地址，并在代理/SIEM 中确认拦截日志。",
         "@baseUrl = https://YOUR-AUTHORIZED-STAGING-HOST",
@@ -448,7 +449,7 @@ def _write_docs(outdir, result, canary, profile, vendor):
     template_path = os.path.join(outdir, "artifacts", "hardening_before_after_template.md")
     os.makedirs(os.path.dirname(template_path), exist_ok=True)
     with open(template_path, "w", encoding="utf-8") as fp:
-        fp.write(BEFORE_AFTER_TEMPLATE)
+        fp.write(BEFORE_AFTER_TEMPLATE.replace("v3.7.0", APP_VERSION))
     util.add_artifact(result, template_path)
 
     readme = """# 攻防验证使用说明

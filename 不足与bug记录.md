@@ -1,8 +1,8 @@
-# 魔盒-ctf v3.7.0 已知不足与边界
+# 魔盒-CTF v4.1.0 已知不足与边界
 
-更新时间：2026-11-08
-对应版本：`魔盒-ctf` v3.7.0（PE 3.7.0.0）
-验证基线：全量单测 **110 项通过**；CLI 责任闸门、平台列表、打包产物冒烟实测通过。
+更新时间：2026-11-09
+对应版本：`魔盒-CTF` v4.1.0（PE 4.1.0.0，版本号由 `ctfbox.__version__` 统一派生）
+验证基线：全量单测 **132 项通过**（新增 `tests/test_architecture_v41.py` 22 项）；Web 全链路 15 个场景（A–O）ALL PASS；CLI 责任闸门、平台列表、打包产物冒烟实测通过。
 
 截至本版本，没有已知的阻塞性缺陷。以下为已确认的能力边界、待改进项与测试未覆盖范围，用于说明软件能做到什么、做不到什么，避免把自动化结果当成确定结论。
 
@@ -82,3 +82,27 @@
 2. 先在本地靶站或授权环境验证利用链，再用于比赛目标。
 3. 外部工具缺失时查看报告中“未接入 / 已跳过 / 依赖缺失”的标注，按提示补齐。
 4. 遇到疑似缺陷，保留任务目录下的 `run.log`、`evidence.jsonl`、`result.json` 与 `audit.jsonl`，便于定位。
+
+---
+
+## 五、v4.1.0 已修复的隐藏缺陷
+
+以下缺陷在 v4.0.0 及更早版本中长期存在，且不报错、只在特定条件下放大，属“静默劣化”，本版本逐项修复并补了回归用例。
+
+| # | 缺陷 | 触发条件 | 实际影响 | 修复 |
+|---|---|---|---|---|
+| 1 | `dispatcher` 用 `abs(hash(path))` 生成产物目录 | 每次进程启动（`PYTHONHASHSEED` 随机化） | 同一文件每次生成不同 `out_*` 目录，工作区无限膨胀（曾累计 41 万文件） | 改 `hashlib.md5(abspath)[:6]` 稳定命名 + `common.new_run_dir()` 滚动保留最近 12 次 |
+| 2 | RAC 脚本用 `subprocess.run(timeout=)` | CRC 爆破等长时间脚本超时 | 只杀直接子进程，孙进程成为孤儿继续吃 CPU，整批任务被拖死 | 统一走 `process_runner.run_command`（Windows Job Object / POSIX killpg），超时杀整棵进程树并保留已产生的输出 |
+| 3 | RAC 脚本输出按系统默认编码解码 | 脚本打印中文（Windows 默认 GBK） | `UnicodeEncodeError` 崩栈，或输出变乱码导致 flag 匹配失败 | 子进程环境强制 `PYTHONIOENCODING=utf-8` + 文本模式 UTF-8 解码 |
+| 4 | 平台接口直接 `resp.json()` | 登录态过期，服务端 302 回登录页 HTML | 抛 `JSONDecodeError` 崩栈，而非可读的“登录态失效” | 新增 `_json_body()`，非 JSON 统一抛 `PlatformError('…返回非 JSON…')`；`submit` 额外校验 cid 为整数 |
+| 5 | 一键梭哈只用第一个附件 | 一题多附件（如 `task.zip` + `hint.png`） | 剩下附件完全不分析，直接判“未解出” | `platforms/cli.py` 依次尝试最多 3 个附件，命中 flag 即停 |
+| 6 | 编排阶段顺序“贵的先跑” | 每次自动解题 | 120–180 s 的深度子进程排在毫秒级的确定性步骤之前，预算被吃光后便宜步骤根本没机会跑 | 重排为成本阶梯：识别 → triage → 指纹 → strings → 古典密码 → 归档链 → 图片隐写 → 编码/RSA/ECC/Hash → xor/对称 → 白名单脚本 → 深度模块 → 二进制/Pwn → 脚本产物跟进 |
+| 7 | 强 flag 命中后仍跑重模块 | 第一层就拿到 `flag{…}` | 每题白烧 1–3 分钟，且重模块可能产出更弱的假候选干扰结论 | 新增 `_has_strong()`（置信度 ≥0.9）+ `_skip_phase()`，命中后跳过深度模块、二进制/Pwn、脚本库、古典密码、产物跟进 |
+| 8 | AI 只有一个总开关 | 打开 AI 裁判 | 每题都拉起 llama-server（首调 +1~7 s），rerank 分支 0 增益 | 拆成 `conductor` / `rerank` 两个开关，默认都关；`rerank._available_cfg()` 改判 `rerank_enabled()` |
+| 9 | 版本号三处硬编码 | 每次发版 | 源码 4.0.0 / `result.json` 3.7.0 / PE 属性 3.7.0.0 三方漂移 | 唯一来源 `ctfbox.__version__`，UI/报告/result.json 派生；PE 版本资源由 `ctfbox/versioning.py` 在打包时生成 |
+| 10 | `scriptrun._expand_multitap` 硬编码 `from ctfbox.modules_codes import` | 包被重命名/冻结打包 | 函数体内 import 失败，multitap 解码静默失效 | 改相对导入 `from ...modules_codes import` |
+| 11 | `wp._narrative` 用 `id(item)` 去重 | 对象被回收后 id 复用 | 两段不同内容被误判为重复，题解漏段 | 改用下标 `pos` |
+| 12 | `main.py` 八个 CLI 分支各 11 行重复的编码/控制台初始化 | 维护 | 修改一处易漏改七处 | 提取 `_bootstrap_console()` / `_reconfig_utf8()`，约 90 行重复降为 8 行调用 |
+| 13 | `classical.analyze` 把整段原文当候选 | 多行文本/文章型题目 | 12 条候选全是同一段原文的变体，占满候选表、掩盖真线索 | 跳过与原文一致的变换、线索压单行并截断 160 字、flag 形态优先占位、线索上限 5 条 |
+| 14 | 正文内嵌编码片段漏解 | 「提示语 + 一串 base64」形态 | 整段 `auto_decode` 解不出即 0 命中，明明能解的 flag 被判未解出 | `codes.decode_chain` 增加 token 级解码（base64/base64url/base32/hex，可打印率 ≥92%），置信 0.93 |
+

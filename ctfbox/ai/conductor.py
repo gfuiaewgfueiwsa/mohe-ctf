@@ -114,7 +114,7 @@ class Conductor:
             pass
         return "other"
 
-    def _allowed_actions(self, path, kind):
+    def _allowed_actions(self, path, kind=""):
         base = ["deep_misc", "decode_chain", "caesar_brute", "xor_analyze"]
         fk = self._file_kind(path)
         if fk == "image":
@@ -130,7 +130,7 @@ class Conductor:
         return base
 
     # ------------------------------------------------------------------
-    def _targets(self, ws, saved, kind):
+    def _targets(self, ws, saved, kind=""):
         items = []
         if saved and os.path.isfile(saved):
             items.append(saved)
@@ -179,7 +179,7 @@ class Conductor:
             pass
         return done
 
-    def _state(self, ws, category, targets, tried, kind):
+    def _state(self, ws, category, targets, tried, kind=""):
         cands = []
         for c in ws.ranked_candidates()[:5]:
             cands.append({"value": str(c.value)[:80], "confidence": round(c.confidence, 2),

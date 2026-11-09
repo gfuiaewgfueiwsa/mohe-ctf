@@ -88,12 +88,14 @@ def _narrative(findings):
             continue
         seen_items.add(key)
         unique.append(item)
+    # 用下标而不是 id(item) 去重：id() 只是内存地址，回收/复用后会误判，
+    # 且 dict 副本与原件地址不同，行为不可预期。
     seen = set()
     for kind in order:
-        for item in unique:
-            if item.get("type") != kind or id(item) in seen:
+        for pos, item in enumerate(unique):
+            if item.get("type") != kind or pos in seen:
                 continue
-            seen.add(id(item))
+            seen.add(pos)
             idx += 1
             title = {
                 "weak-login": "弱口令登录",
@@ -116,8 +118,8 @@ def _narrative(findings):
                       "- 置信度：%s" % (item.get("confidence") or "-"),
                       "- 时间：%s" % (item.get("ts") or "-"), ""]
     support = ("cookie-weak", "csrf-poc")
-    for item in unique:
-        if id(item) in seen:
+    for pos, item in enumerate(unique):
+        if pos in seen:
             continue
         if item.get("type") in support:
             continue
@@ -159,7 +161,7 @@ def build_web_wp(result, meta=None, workdir=""):
         "# %s（%s）Writeup" % (name, category), "",
         "> 格式：%s ｜ 平台：%s ｜ 题目 ID：%s ｜ 生成时间：%s" % (
             WP_VERSION, platform, cid or "-", now),
-        "> 目标：`%s` ｜ 工具：魔盒-ctf v%s（声明闸门 + scope 双校验 + 审计）"
+        "> 目标：`%s` ｜ 工具：魔盒-CTF v%s（声明闸门 + scope 双校验 + 审计）"
         % (target, APP_VERSION),
         "> 说明：以下步骤与证据均来自本次工具运行，未命中的阶段会明确标注。", "",
         "## 一、题目信息", "",
@@ -244,35 +246,57 @@ def build_web_wp(result, meta=None, workdir=""):
     return "\n".join(lines), data
 
 
-def _write_wp(md, data, meta, ws, kind, success=False):
-    task_path = os.path.join(ws.dir, "wp.md")
-    with open(task_path, "w", encoding="utf-8") as fp:
-        fp.write(md)
-    out_dir = os.path.join(WORKSPACE, "wp")
-    os.makedirs(out_dir, exist_ok=True)
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(meta.get("id") or data.get("name") or kind))
-    copy_path = os.path.join(out_dir, "%s_%s.md" % (
-        slug[:40], time.strftime("%Y%m%d_%H%M%S")))
+def _safe_write(path, text):
     try:
-        with open(copy_path, "w", encoding="utf-8") as fp:
-            fp.write(md)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fp:
+            fp.write(text)
+        return True
     except Exception:
-        copy_path = ""
-    # v4.0: 成功解出时，在软件根目录（exe 同级）也落一份 WP，方便用户直接找到
+        return False
+
+
+def _read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fp:
+            return fp.read()
+    except Exception:
+        return None
+
+
+def _write_wp(md, data, meta, ws, kind, success=False):
+    # 任务工作区固定落 wp.md（始终覆盖，便于查看最新）
+    task_path = os.path.join(ws.dir, "wp.md")
+    _safe_write(task_path, md)
+
+    cat = str(data.get("category") or kind)
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(meta.get("id") or data.get("name") or kind))
+    wp_dir = os.path.join(WORKSPACE, "wp")
+    os.makedirs(wp_dir, exist_ok=True)
+
+    # 稳定文件名：同一题反复运行只覆盖，不再产生海量时间戳副本（优化点 1）
+    stable = os.path.join(wp_dir, "WP_%s_%s.md" % (cat, slug[:40]))
+    _safe_write(stable, md)
+
+    # 成功解出时，在软件根目录（exe 同级）也落一份稳定 WP，方便用户直接找到
+    # 仅在「成功且 flag/内容相对上次有变化」时才写入并归档，避免重复刷屏（优化点 2）
     root_copy = ""
     if success:
         try:
             from ..common import APP_DIR
-            cat = str(data.get("category") or kind)
-            root_name = "WP_%s_%s_%s.md" % (
-                cat, slug[:24] or "task", time.strftime("%Y%m%d_%H%M%S"))
-            root_path = os.path.join(APP_DIR, root_name)
-            with open(root_path, "w", encoding="utf-8") as fp:
-                fp.write(md)
-            root_copy = root_path
+            root_stable = os.path.join(APP_DIR, "WP_%s_%s.md" % (cat, slug[:24] or "task"))
+            prev = _read_text(root_stable)
+            if prev != md:
+                if _safe_write(root_stable, md):
+                    root_copy = root_stable
+                    archive_dir = os.path.join(wp_dir, "archive")
+                    os.makedirs(archive_dir, exist_ok=True)
+                    arch = os.path.join(archive_dir, "WP_%s_%s_%s.md" % (
+                        cat, slug[:24] or "task", time.strftime("%Y%m%d_%H%M%S")))
+                    _safe_write(arch, md)
         except Exception:
             root_copy = ""
-    return task_path, copy_path, data, root_copy
+    return task_path, stable, data, root_copy
 
 
 def write_web_wp(result, meta, ws):
@@ -332,7 +356,7 @@ def build_file_wp(result, meta=None, workdir="", evidence=None):
         "# %s（%s）Writeup" % (name, category), "",
         "> 格式：%s ｜ 平台：%s ｜ 题目 ID：%s ｜ 生成时间：%s" % (
             WP_VERSION, platform, cid or "-", now),
-        "> 目标文件：`%s` ｜ 工具：魔盒-ctf v%s" % (target, APP_VERSION),
+        "> 目标文件：`%s` ｜ 工具：魔盒-CTF v%s" % (target, APP_VERSION),
         "> 说明：以下步骤与证据均来自本次工具运行，未命中的阶段会明确标注。", "",
         "## 一、题目信息", "",
         "- 题目：%s" % name,

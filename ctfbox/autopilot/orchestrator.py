@@ -13,12 +13,13 @@ import time
 
 from . import VERSION, scriptlib, triage
 from .. import modules_zipcrack
-from .models import ToolResult
+from ..common import try_decode_text
+from .models import Candidate, ToolResult
 from .sandbox import detect as sandbox_detect, policy_text
 from .scope import ScopeGuard
-from .tools import (archive, base, binary, codes, crypto, deepmisc, ecc, ghidra,
-                    hash as hashtool, pwnstatic, recon, rsa, scriptrun, stego,
-                    webexploit, webprobe, xor)
+from .tools import (archive, base, binary, classical, codes, crypto, deepmisc,
+                    ecc, ghidra, hash as hashtool, pwnstatic, recon, rsa,
+                    scriptrun, stego, webexploit, webprobe, xor)
 from .workspace import TaskWorkspace
 
 STRONG_FLAG_CONF = 0.8
@@ -27,6 +28,21 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff")
 
 def _is_image(path: str) -> bool:
     return os.path.basename(path).lower().endswith(IMAGE_EXTS)
+
+
+def _hint_to_flags(text: str) -> list:
+    """从提示文本提炼 flag：'FLAG IS XXX' / 'flag: XXX' / 'the flag is XXX'。
+
+    音频摩斯、流量回显、文档提示等常直接给出明文字样（如 "FLAG IS AIRRUDDER MORSE CODE"），
+    此前只作为 finding 展示、不转候选，导致"解出了提示却判未命中"。
+    """
+    out = []
+    for m in re.finditer(
+            r"(?i)\bflag\s*(?:is|are|[:：=])\s*([A-Za-z0-9_\-!.,?@#$%^&*+ ]{2,80})", text or ""):
+        v = m.group(1).strip().rstrip(".,;!?")
+        if len(v) >= 2:
+            out.append(v if "{" in v else "flag{%s}" % v.strip().replace(" ", "_"))
+    return out
 
 
 def _xor_key_hints(res) -> list:
@@ -85,6 +101,20 @@ class AutoPilot:
     def _can_run(self) -> bool:
         return self.step < self.max_steps and time.time() < self.deadline
 
+    def _has_strong(self, threshold: float = 0.9) -> bool:
+        """是否已拿到强候选 flag——用于提前收敛，不再燃烧预算。"""
+        try:
+            return any(c.confidence >= threshold for c in self.ws.candidates)
+        except Exception:
+            return False
+
+    def _skip_phase(self, name: str, reason: str):
+        self.ws.notes.append("%s：%s" % (name, reason))
+        try:
+            self.ws.log("[skip] %s（%s）" % (name, reason), "note")
+        except Exception:
+            pass
+
     def _run(self, tool_fn, action: str, label: str = ""):
         if not self._can_run():
             self.ws.notes.append("达到步数/时间预算，停止扩展分析")
@@ -107,8 +137,13 @@ class AutoPilot:
                       url=None, guard=None):
         """可选：本地小模型作为裁判，在确定性流程收尾后补一次路由/深度决策。"""
         try:
-            from ..ai import ai_enabled
-            enabled = self.ai if self.ai is not None else ai_enabled()
+            from ..ai import conductor_enabled
+            # v4.1：A/B 实测编排 0 增益（每题 +4~8s），默认只保留候选重排。
+            # self.ai 是显式实验开关，可绕过默认关闭强制开启/关闭。
+            if self.ai is not None:
+                enabled = bool(self.ai)
+            else:
+                enabled = conductor_enabled()
             if not enabled or not self._can_run():
                 return
             from ..ai.conductor import Conductor
@@ -160,10 +195,20 @@ class AutoPilot:
         strings_res = None
         if "strings" in tri.stages and size <= 64 * 1024 * 1024:
             strings_res = self._run(lambda: recon.strings_scan(saved), "strings + flag 扫描")
+        elif "strings" in tri.stages:
+            ws.notes.append("strings 阶段跳过（文件 %.1f MB 超过 64 MB 上限）"
+                            % (size / 1024.0 / 1024.0))
         else:
             ws.notes.append("strings 阶段按判型跳过（%s）" % tri.subtype)
         if "entropy" in tri.stages:
             self._run(lambda: recon.entropy_blocks(saved), "分块熵检测")
+
+        # v4.0.4：纯文本目标 → 古典密码/编码综合分析（凯撒/维吉尼亚/仿射/列移位/特殊编码）
+        # v4.2：strings 已命中强 flag 时跳过（古典分析含单表替换 beam search，秒级成本）
+        if category == "text" and raw and not self._has_strong():
+            cl_res = self._run(lambda: classical.analyze(raw), "古典密码/编码综合分析")
+            if cl_res and cl_res.ok:
+                ws.notes.append("古典密码：" + cl_res.summary)
 
         # v3.3.0：RAR5/7z/ZIP 通过 7-Zip 解包并递归分析（成员只读，不执行）
         archive_results = []
@@ -198,6 +243,46 @@ class AutoPilot:
                     if ecc_done:
                         break
 
+        # v4.0.4：压缩包解出的文本/源码成员 → 编码链 + 古典密码综合分析。
+        # 此前只对成员做 ECC 与图片隐写，普通文本密文（如 flag_encode.txt / Cipher.txt）
+        # 被直接忽略，导致"密文放压缩包里"的题漏解。
+        member_texts = []
+        for ares in archive_results:
+            for member in ((ares.data or {}).get("files") or [])[:40]:
+                try:
+                    if os.path.getsize(member) > 2 * 1024 * 1024:
+                        continue
+                    with open(member, "rb") as fp:
+                        mraw = fp.read()
+                except Exception:
+                    continue
+                is_text, _enc, mtext = try_decode_text(mraw)
+                if is_text and mtext and len(mtext.strip()) >= 6:
+                    member_texts.append((member, mtext))
+        for mpath, mtext in member_texts[:6]:
+            if not self._can_run():
+                break
+            mname = os.path.basename(mpath)
+            ch = self._run(
+                lambda t=mtext: codes.decode_chain(t.encode("utf-8", "ignore")),
+                "压缩包成员编码链（%s）" % mname)
+            if ch and ch.ok:
+                ws.notes.append("成员编码链（%s）：%s" % (mname, ch.summary))
+            cls = self._run(lambda t=mtext: classical.analyze(t),
+                            "压缩包成员古典密码（%s）" % mname)
+            if cls and cls.ok:
+                ws.notes.append("成员古典密码（%s）：%s" % (mname, cls.summary))
+
+        # v4.0.4：归档类复用 dispatcher 完整归档链（伪加密修复/弱口令与掩码爆破/CRC 碰撞）。
+        # 此前 deep_map 只认 "deep_archive"，而判型给 zip 的 stage 是 "archive"，
+        # 导致归档深度模块（含伪加密自动修复）从不执行，加密/伪加密 zip 题漏解。
+        if archive_results or archive.is_archive(saved):
+            deep_arch = self._run(
+                lambda: deepmisc.analyze(saved, "archive", timeout=120),
+                "深度归档模块（伪加密修复/弱口令爆破/CRC 碰撞）")
+            if deep_arch and deep_arch.candidates:
+                ws.notes.append("归档深度命中：%s" % deep_arch.summary)
+
         # 图片隐写：压缩包成员复用恢复出的口令，独立图片使用题名/文件名派生候选
         image_found = False
         image_jobs, seen_images = [], set()
@@ -229,60 +314,10 @@ class AutoPilot:
                 if any(c.confidence >= 0.9 for c in stego_res.candidates):
                     image_found = True
 
-        # ---- 深度模块：复用 dispatcher 全量方向能力（崩溃隔离子进程）----
-        deep_results = []
-        deep_map = {
-            "deep_text": "text", "deep_traffic": "capture",
-            "deep_forensic": "forensic", "deep_document": "document",
-            "deep_audio": "media", "deep_video": "media",
-            "deep_database": "database", "deep_reverse": "executable",
-            "deep_archive": "archive", "deep_unknown": "unknown",
-            "deep_crypto": "crypto",
-        }
-        deep_done = set()
-        for stage_name in tri.stages:
-            deep_cat = deep_map.get(stage_name)
-            if not deep_cat or deep_cat in deep_done:
-                continue
-            if not self._can_run():
-                ws.notes.append("达到步数/时间预算，剩余深度模块跳过")
-                break
-            remain = int(self.deadline - time.time())
-            if remain < 20:
-                ws.notes.append("时间预算不足，%s 深度模块跳过" % deep_cat)
-                continue
-            deep_done.add(deep_cat)
-            budget = max(20, min(180, remain - 10))
-            deep_res = self._run(
-                lambda c=deep_cat, b=budget: deepmisc.analyze(saved, c, timeout=b),
-                "深度模块：%s（取证/流量/文档/音频/逆向/数据库）" % deep_cat,
-                label="deep." + deep_cat)
-            if deep_res:
-                deep_results.append(deep_res)
-                if deep_res.candidates:
-                    ws.notes.append("深度模块命中：%s" % deep_res.summary)
-
-        is_binary = category in ("executable", "unknown") and not info.get("is_text")
-        ghidra_res = None
-        strong_now = any(c.confidence >= 0.9 for c in ws.candidates)
-        if "binary_struct" in tri.stages or (is_binary and info.get("ftype", "").startswith(("PE", "ELF"))):
-            self._run(lambda: binary.analyze(saved, deep=self.deep), "PE/ELF 结构解析")
-        if "pwn_static" in tri.stages:
-            self._run(lambda: pwnstatic.analyze(saved), "Pwn 静态定位")
-        if "decompile" in tri.stages and not strong_now:
-            if ghidra.available():
-                budget_left = int(self.deadline - time.time()) - 20
-                ghidra_res = self._run(
-                    lambda: ghidra.decompile(saved, ws.artifacts_dir,
-                                             timeout=max(60, min(180, budget_left))),
-                    "Ghidra headless 反编译（主证据）")
-            else:
-                ws.notes.append("未检测到 Ghidra/Java，反编译跳过；" + ghidra.INSTALL_HINT)
-            if not ghidra_res or not ghidra_res.ok:
-                self._run(lambda: binary.r2_excerpt(saved), "radare2 反汇编摘录（Ghidra 回退）")
-        elif "decompile" in tri.stages:
-            ws.notes.append("已命中强 flag，反编译阶段跳过")
-
+        # ================= 阶段 A：低成本确定性提取 =================
+        # v4.2 顺序优化：编码链/RSA/ECC/哈希全部是进程内、秒级、结果确定的步骤，
+        # 旧顺序把它们排在 120~180s 的深度 dispatcher 之后，时间预算被重模块吃光时
+        # 「本可以立刻出答案」的步骤根本没机会执行。
         skip_codes = "deep_text" in tri.stages
         if (raw is not None and "codes" in tri.stages and not skip_codes
                 and (info.get("is_text") or category in ("text", "crypto", "misc"))):
@@ -315,8 +350,9 @@ class AutoPilot:
             if preview:
                 self._run(lambda: hashtool.analyze_text(preview), "哈希识别/弱爆破")
 
-        # 原始数据已直接命中 flag 时跳过异或/对称试解，避免对已明文做无意义搜索
-        found_direct = image_found or any(c.confidence >= 0.9 for c in ws.candidates)
+        # ================= 阶段 B：异或与对称试解 =================
+        # 原始数据已直接命中 flag 时跳过，避免对已明文做无意义搜索
+        found_direct = image_found or self._has_strong()
         xor_res = None
         if "xor" in tri.stages:
             if found_direct:
@@ -341,8 +377,82 @@ class AutoPilot:
         elif not want_crypto:
             ws.notes.append("对称密码试解按判型跳过（无加密线索）")
 
+        # 成本阶梯：容器/文本提取 → 白名单脚本（20~90s/个）→ 深度子进程（120~180s/方向）
         # ---- 脚本库自动调用（白名单 + 参数模板）----
         script_results = self._run_scripts(saved, tri, raw, info)
+
+        # ---- 深度模块：复用 dispatcher 全量方向能力（崩溃隔离子进程）----
+        deep_results = []
+        deep_map = {
+            "deep_text": "text", "deep_traffic": "capture",
+            "deep_forensic": "forensic", "deep_document": "document",
+            "deep_audio": "media", "deep_video": "media",
+            "deep_database": "database", "deep_reverse": "executable",
+            "deep_archive": "archive", "deep_unknown": "unknown",
+            "deep_crypto": "crypto",
+        }
+        deep_done = set()
+        # 已命中强 flag 时不再跑重模块：单方向 60~180s，纯属浪费
+        if self._has_strong():
+            self._skip_phase("深度模块", "已命中强 flag")
+        for stage_name in ([] if self._has_strong() else tri.stages):
+            deep_cat = deep_map.get(stage_name)
+            if not deep_cat or deep_cat in deep_done:
+                continue
+            if not self._can_run():
+                ws.notes.append("达到步数/时间预算，剩余深度模块跳过")
+                break
+            remain = int(self.deadline - time.time())
+            if remain < 20:
+                ws.notes.append("时间预算不足，%s 深度模块跳过" % deep_cat)
+                continue
+            deep_done.add(deep_cat)
+            budget = max(20, min(180, remain - 10))
+            deep_res = self._run(
+                lambda c=deep_cat, b=budget: deepmisc.analyze(saved, c, timeout=b),
+                "深度模块：%s（取证/流量/文档/音频/逆向/数据库）" % deep_cat,
+                label="deep." + deep_cat)
+            if deep_res:
+                deep_results.append(deep_res)
+                if deep_res.candidates:
+                    ws.notes.append("深度模块命中：%s" % deep_res.summary)
+                # v4.0.4：提示文本 → flag 提炼（音频摩斯/流量回显/文档提示常直接给出明文字样）
+                for _item in (deep_res.data or {}).get("findings") or []:
+                    _txt = "%s %s" % (_item.get("title", ""), _item.get("detail", ""))
+                    for _hf in _hint_to_flags(_txt):
+                        if _hf not in [c.value for c in ws.candidates]:
+                            ws.add_candidates([Candidate(
+                                _hf, 0.88, "hint." + deep_cat,
+                                "提示文本提炼（%s）" % _item.get("title", ""))])
+                            ws.notes.append("提示文本提炼命中：%s" % _hf)
+
+        is_binary = category in ("executable", "unknown") and not info.get("is_text")
+        ghidra_res = None
+        strong_now = self._has_strong()
+        if strong_now:
+            self._skip_phase("二进制结构/Pwn 静态", "已命中强 flag")
+        if not strong_now and ("binary_struct" in tri.stages
+                               or (is_binary and info.get("ftype", "").startswith(("PE", "ELF")))):
+            self._run(lambda: binary.analyze(saved, deep=self.deep), "PE/ELF 结构解析")
+        if not strong_now and "pwn_static" in tri.stages:
+            self._run(lambda: pwnstatic.analyze(saved), "Pwn 静态定位")
+        if "decompile" in tri.stages and not strong_now:
+            if ghidra.available():
+                budget_left = int(self.deadline - time.time()) - 20
+                ghidra_res = self._run(
+                    lambda: ghidra.decompile(saved, ws.artifacts_dir,
+                                             timeout=max(60, min(180, budget_left))),
+                    "Ghidra headless 反编译（主证据）")
+            else:
+                ws.notes.append("未检测到 Ghidra/Java，反编译跳过；" + ghidra.INSTALL_HINT)
+            if not ghidra_res or not ghidra_res.ok:
+                self._run(lambda: binary.r2_excerpt(saved), "radare2 反汇编摘录（Ghidra 回退）")
+        elif "decompile" in tri.stages:
+            ws.notes.append("已命中强 flag，反编译阶段跳过")
+
+        # ---- 脚本产物跟进（图片隐写/压缩包递归），命中强 flag 即跳过 ----
+        if script_results and not self._has_strong():
+            self._follow_script_artifacts(script_results)
 
         extra = {"category": category, "file_type": info.get("ftype"),
                  "identify": info, "sandbox": sandbox, "tool_status": st,
@@ -514,10 +624,16 @@ class AutoPilot:
 
     # ------------------------------------------------------------------
     def _run_scripts(self, path: str, tri, raw, info) -> list:
-        """按判型清单调用白名单脚本；命中强 flag 即停止后续脚本。"""
+        """按判型清单调用白名单脚本；命中强 flag 即停止后续脚本。
+
+        调用方（run_file）负责在执行后跟进脚本产物，这里只负责「挑脚本 + 跑 + 命中即止」。
+        """
         specs = scriptlib.select(tri.scripts)
         results = []
         if not specs:
+            return results
+        if self._has_strong():
+            self._skip_phase("脚本库", "已命中强 flag")
             return results
         text = ""
         if raw is not None and info.get("is_text"):
@@ -555,8 +671,6 @@ class AutoPilot:
             if res is not None and any(c.confidence >= 0.88 for c in res.candidates):
                 self.ws.notes.append("脚本命中候选：%s" % res.summary)
                 break
-        if not any(c.confidence >= 0.9 for c in self.ws.candidates):
-            self._follow_script_artifacts(results)
         return results
 
     def _follow_script_artifacts(self, results):
@@ -673,7 +787,7 @@ class AutoPilot:
     def _write_report(self, result: dict, ranked, next_steps):
         ws = self.ws
         lines = [
-            "# 魔盒-ctf %s 自动化报告" % VERSION, "",
+            "# 魔盒-CTF %s 自动化报告" % VERSION, "",
             f"- 目标：`{result.get('target')}`",
             f"- 类型：{result.get('kind')} / {result.get('category', 'web')}",
             f"- 工作区：`{ws.dir}`",

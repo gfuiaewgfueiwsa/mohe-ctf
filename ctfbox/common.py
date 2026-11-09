@@ -106,6 +106,60 @@ def report_file(stem: str, ext: str = ".html") -> str:
 
 
 # ----------------------------------------------------------------------------
+# 统一运行产物目录
+# ----------------------------------------------------------------------------
+# 历史问题：dispatcher 用 `WORKSPACE/out_<文件名>_<abs(hash(path))%0xffff>` 作为
+# 中间产物目录。`hash()` 受 PYTHONHASHSEED 随机化影响，同一文件每次运行都会
+# 新建不同目录，长期使用后 workspace 根目录堆积数万个小目录（实测 41 万文件）。
+# 这里改为「每进程一个运行根目录」，并做最近 N 次保留的滚动清理：
+#   workspace/runs/<时间戳>_<pid>/
+# 所有模块的 out_*/polar_* 产物都落在其下，清理时只删一个目录即可。
+RUNS_DIR = os.path.join(WORKSPACE, "runs")
+_RUN_DIR = None
+_RUN_KEEP = 12          # 保留最近 12 次运行，满足排查需求又不无限增长
+
+
+def prune_runs(keep: int = _RUN_KEEP) -> int:
+    """删除过旧的运行目录，返回删除数量。失败静默（不影响主流程）。"""
+    import shutil
+    removed = 0
+    try:
+        names = [os.path.join(RUNS_DIR, n) for n in os.listdir(RUNS_DIR)]
+        dirs = [p for p in names if os.path.isdir(p)]
+        dirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        for old in dirs[max(1, keep):]:
+            try:
+                shutil.rmtree(old, ignore_errors=True)
+                removed += 1
+            except Exception:
+                continue
+    except Exception:
+        return removed
+    return removed
+
+
+def new_run_dir(prefix: str = "run") -> str:
+    """返回本进程共享的产物根目录（首次调用时创建并顺带清理旧运行）。"""
+    global _RUN_DIR
+    if _RUN_DIR and os.path.isdir(_RUN_DIR):
+        return _RUN_DIR
+    import time
+    try:
+        os.makedirs(RUNS_DIR, exist_ok=True)
+        prune_runs()
+    except Exception:
+        pass
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(RUNS_DIR, "%s_%s_%d" % (safe_name(prefix), stamp, os.getpid()))
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        return WORKSPACE
+    _RUN_DIR = path
+    return path
+
+
+# ----------------------------------------------------------------------------
 # 后台子进程静默：打包为 windowed 程序后，调用 7z/exiftool/ffmpeg/python 等
 # 控制台程序时默认会接连弹出黑窗。这里统一注入 CREATE_NO_WINDOW，
 # 让所有后台工具调用静默执行；GUI 子系统程序（x64dbg/dnSpy/ffplay 等）不受影响，
@@ -215,7 +269,7 @@ class Report:
 STRONG_PREFIXES = [
     b"fl?ag", b"f1ag", b"fl4g", b"ctf", b"nssctf", b"dasctf", b"buuctf", b"buuoj",
     b"gwht", b"moectf", b"basectf", b"syc", b"d3ctf", b"0xgame", b"hgame", b"iscc",
-    b"ciscn", b"n1ctf", b"sctf", b"rwctf", b"de1ctf", b"hxp", b"corctf", b"uiuctf",
+    b"ciscn", b"n1ctf", b"n1book", b"sctf", b"rwctf", b"de1ctf", b"hxp", b"corctf", b"uiuctf",
     b"lacctf", b"ductf", b"picoctf", b"hsctf", b"tjctf", b"csictf", b"ctfshow",
     b"xctf", b"geekctf", b"catctf", b"venox", b"helloctf", b"mrctf", b"zjctf",
     b"dmctf", b"cnss", b"nctf", b"tip", b"key", b"answer", b"secret", b"password",
@@ -230,6 +284,7 @@ FLAG_KV = (rb"(?i)flag[=:][ ]?(?:\{[A-Za-z0-9_\-./+=@$%^&*!?]{3,199}\}"
 # 弱模式：任意 前缀{...}，仅用于文件原始数据/雕刻/字符串扫描。
 # 收紧：内容首字符须为字母数字、整体为 token 形态（排除 CSS/键值里常见的 '#',':',';' 与空白），
 # 内容至少 4 个字符，显著降低在高熵二进制 / 样式表上的误报。
+# 保留 `=`（base64 填充会用到），压缩 JS 的 `try{a=b}` 交给 looks_like_code_flag 剔除。
 FLAG_WEAK = rb"[A-Za-z0-9_]{2,20}\{[A-Za-z0-9][A-Za-z0-9_\-./+=@$%^&*!?]{3,199}?\}"
 
 SCAN_WINDOW = 4 * 1024 * 1024     # 大文件分窗扫描，避免弱正则在超长数据上回溯放大
@@ -252,6 +307,34 @@ def is_placeholder_flag(value: str) -> bool:
     if not body:
         return True
     return bool(_PLACEHOLDER_CHARS.fullmatch(body) or _PLACEHOLDER_BODY.fullmatch(body))
+
+
+# 前端压缩代码里的 `try{n=document.activeElement!==e}`、`flag{Wt=null}` 形状上和
+# flag 完全一致，弱/强正则都会命中，然后被当成候选提交出去（既浪费提交配额又污染报表）。
+# 真实 flag 体内基本不会出现比较/赋值运算符、HTML 标签或 DOM API，故在此统一剔除；
+# 唯一常见的 `=` 是 base64 尾部填充，所以只允许出现在结尾。
+_CODE_BODY = re.compile(
+    r"""(!==|!==|===|=>|&&|\|\||\bfunction\b|\bvar\b|\breturn\b|document\.|window\.|"""
+    r"""getElementById|\.style\b|\.length\b|<\s*/?\s*[a-zA-Z]|/>|javascript:)""",
+    re.I)
+
+
+def looks_like_code_flag(value: str) -> bool:
+    """判断 flag 形状命中是否是代码片段而非答案。"""
+    if not value:
+        return True
+    m = re.match(r"(?is)^[A-Za-z0-9_.$]{2,24}\{(.*)\}$", value.strip())
+    body = (m.group(1) if m else value).strip()
+    if not body:
+        return True
+    if _CODE_BODY.search(body):
+        return True
+    if m:
+        if "{" in body or "}" in body:
+            return True
+        if "=" in body.rstrip("="):      # 非尾部填充的等号 → 赋值语句
+            return True
+    return False
 
 def scan_flags(data: bytes, strong_only: bool = False) -> List[str]:
     """在字节数据中搜索 flag，返回去重后的字符串列表。
@@ -292,6 +375,8 @@ def scan_flags(data: bytes, strong_only: bool = False) -> List[str]:
                 except Exception:
                     continue
                 if is_placeholder_flag(s):
+                    continue
+                if looks_like_code_flag(s):
                     continue
                 if s not in found:
                     found.append(s)

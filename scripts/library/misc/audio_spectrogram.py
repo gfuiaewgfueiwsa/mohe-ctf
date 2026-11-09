@@ -24,7 +24,7 @@ def decode_to_wav(path, outdir):
     out = os.path.join(outdir, "decoded.wav")
     ff = shutil.which("ffmpeg")
     if not ff:
-        for cand in (r"D:\工具合集软件\魔盒-ctf\tools\portable\ffmpeg\ffmpeg.exe",):
+        for cand in (r"D:\工具合集软件\魔盒-CTF\tools\portable\ffmpeg\ffmpeg.exe",):
             if os.path.exists(cand):
                 ff = cand
     if not ff:

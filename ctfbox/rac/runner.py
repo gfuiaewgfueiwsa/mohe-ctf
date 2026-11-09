@@ -4,18 +4,23 @@
 执行策略：
   - 解释器：打包后用随包便携 Python（tools/runtime/python），源码模式用当前解释器
     （与 common.external_python / 工具中心口径一致，干净电脑无 Python 也能跑）
-  - 子进程静默（common 已全局注入 CREATE_NO_WINDOW，不会弹黑窗）
-  - 超时保护，输出截断保头尾
+  - 执行内核统一走 process_runner.run_command：
+      * Windows 用 kill-on-close Job 托管，超时/取消会连同孙进程一起终止；
+        旧实现用 subprocess.run(timeout=)，只杀直接子进程，脚本自己起的
+        多进程（CRC 爆破、并行扫描）会变成孤儿继续吃 CPU，把整批任务拖死。
+      * 强制 UTF-8 输出，避免中文脚本在 GBK 控制台下 UnicodeEncodeError。
+      * stdout/stderr 有上限，长输出不会打爆内存。
+  - 超时时保留已产生的输出（部分脚本在超时前已打印 flag）。
   - flag 提取：modules_exploit.FLAG_RE（强）+ common.scan_flags(strong) 双路合并去重
 """
 import os
-import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 from ..common import external_python, is_placeholder_flag, scan_flags
 from ..modules_exploit import FLAG_RE
+from ..process_runner import TaskTimeout, run_command
 
 DEFAULT_TIMEOUT = 180
 OUTPUT_HEAD = 6000
@@ -55,6 +60,12 @@ def extract_flags(output: str) -> List[str]:
     return found
 
 
+def _script_env():
+    env = os.environ.copy()
+    env.update(PYTHONIOENCODING="utf-8:replace", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
+    return env
+
+
 def run_script_entry(script_path: str, arglist: List[str], cwd: str,
                      timeout: int = DEFAULT_TIMEOUT,
                      python_exe: Optional[str] = None) -> RunResult:
@@ -64,21 +75,25 @@ def run_script_entry(script_path: str, arglist: List[str], cwd: str,
     r = RunResult(script=script_path, cmd=cmd)
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, cwd=cwd or None, capture_output=True,
-                              timeout=timeout,
-                              stdin=subprocess.DEVNULL)  # 交互式 input() 的脚本直接 EOF 优雅失败，不卡流水线
+        proc = run_command(cmd, log=None, timeout=timeout, cwd=cwd or None,
+                           env=_script_env())
         r.exit_code = proc.returncode
-        r.output = (proc.stdout or b"").decode("utf-8", "replace") + \
-                   (proc.stderr or b"").decode("utf-8", "replace")
+        r.output = (proc.stdout or "") + (proc.stderr or "")
         r.ok = proc.returncode == 0
         if not r.output.strip() and r.ok:
             r.output = "(无输出，退出码 0)"
-    except subprocess.TimeoutExpired:
+    except TaskTimeout as exc:
+        # 超时也保留已产生的输出：部分脚本先打印 flag 再继续跑长任务
         r.timed_out = True
-        r.error = f"超时（>{timeout}s），已终止"
-        r.output = "(超时无输出)"
+        r.exit_code = -1
+        r.output = "%s\n%s" % (exc.stdout or "", exc.stderr or "")
+        r.error = f"超时（>{timeout}s），已终止（含子进程）"
+        if not r.output.strip():
+            r.output = "(超时无输出)"
     except FileNotFoundError:
         r.error = f"解释器不存在: {py}（打包环境请确认 tools/runtime/python）"
+    except OSError as e:
+        r.error = f"执行环境不可用: {e}"
     except Exception as e:
         r.error = f"执行异常: {e}"
     r.elapsed = time.time() - t0

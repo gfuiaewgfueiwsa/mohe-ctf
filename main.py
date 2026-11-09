@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
-"""魔盒-ctf 启动入口（原 CTFToolbox）。
+"""魔盒-CTF 启动入口（原 CTFToolbox）。
 用法：
   双击/无参数          启动图形界面（启动时须勾选同意《软件责任说明》）
-  魔盒-ctf.exe --cli <文件> [文件...]   命令行批量分析（报告写入 workspace/cli_report.txt）
-  魔盒-ctf.exe --rac "题目描述" [附件...]  RAC 自动化流水线（识别→匹配脚本→填参→执行→提取 flag）
-  魔盒-ctf.exe --webauto <URL>   Web 自动化解题（只读、同源、限速的取证链）
-  魔盒-ctf.exe --webattack <URL> Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
-  魔盒-ctf.exe --auto <文件|URL> [--deep] [--render] [--ai]
+  魔盒-CTF.exe --cli <文件> [文件...]   命令行批量分析（报告写入 workspace/cli_report.txt）
+  魔盒-CTF.exe --rac "题目描述" [附件...]  RAC 自动化流水线（识别→匹配脚本→填参→执行→提取 flag）
+  魔盒-CTF.exe --webauto <URL>   Web 自动化解题（只读、同源、限速的取证链）
+  魔盒-CTF.exe --webattack <URL> Web 深度全自动（页面分析+全 payload 矩阵+上传测试）
+  魔盒-CTF.exe --auto <文件|URL> [--deep] [--render] [--ai]
                                       v3.7.0 一键梭哈（识别→反编译/密码试解/Web 全量利用→证据链→候选 flag）
-  魔盒-ctf.exe --comp <memory|traffic|mobile|codeaudit|baseline|logtime|defense|compare> ...
+  魔盒-CTF.exe --comp <memory|traffic|mobile|codeaudit|baseline|logtime|defense|compare> ...
                                       v3.7.0 赛事专项（离线取证/审计/加固基线，只生成不执行）
-  魔盒-ctf.exe --platform polarctf --cookie <文件|Cookie>
-  魔盒-ctf.exe --platform polarctf --list [--category WEB]
-  魔盒-ctf.exe --platform polarctf --solve <题目ID>
+  魔盒-CTF.exe --platform polarctf --cookie <文件|Cookie>
+  魔盒-CTF.exe --platform polarctf --list [--category WEB]
+  魔盒-CTF.exe --platform polarctf --solve <题目ID>
                                       v3.7.0 平台闭环（登录态→开实例→一键梭哈→自动提交）
 
 CLI 首次使用须加 --accept-responsibility（同意《软件责任说明》并记住本机）；
@@ -29,6 +29,29 @@ try:
     _install_crashguard()
 except Exception:
     pass
+
+
+def _reconfig_utf8():
+    """控制台/重定向统一 UTF-8：guard 报错也要可读，不能落在 GBK 默认上乱码。"""
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def _bootstrap_console():
+    """CLI 模式：切换代码页 + UTF-8 重配置。
+
+    此前 8 个 CLI 分支各自复制同一段初始化代码（约 90 行），任何一处修改
+    都要改 8 遍且容易漏；统一收敛到这里。
+    """
+    if sys.platform.startswith("win"):
+        try:
+            os.system("chcp 65001 >nul 2>nul")
+        except Exception:
+            pass
+    _reconfig_utf8()
 
 
 def run_cli(files):
@@ -116,7 +139,7 @@ def run_pwn(args):
 
     path = next((a for a in args if os.path.isfile(a)), "")
     if not path:
-        raise SystemExit("用法：魔盒-ctf.exe --pwn <ELF> [--host H --port P]")
+        raise SystemExit("用法：魔盒-CTF.exe --pwn <ELF> [--host H --port P]")
     opts = {}
     for i, a in enumerate(args):
         if a.startswith("--") and i + 1 < len(args):
@@ -223,7 +246,7 @@ def run_v3_auto(args):
         if not target and not a.startswith("--"):
             target = a
     if not target:
-        raise SystemExit("用法：魔盒-ctf.exe --auto <文件|URL>")
+        raise SystemExit("用法：魔盒-CTF.exe --auto <文件|URL>")
 
     def log(m):
         try:
@@ -278,11 +301,7 @@ if __name__ == "__main__":
         pass
 
     # 控制台/重定向统一 UTF-8：guard 报错也要可读，不能落在 GBK 默认上乱码
-    for _s in (sys.stdout, sys.stderr):
-        try:
-            _s.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+    _reconfig_utf8()
 
     if len(sys.argv) > 1 and sys.argv[1] == "--analysis-worker":
         from ctfbox.analysis_worker import worker_main
@@ -302,16 +321,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] in ("--cli", "-c"):
         # CLI 模式统一 UTF-8 输出，避免 PowerShell/cmd 默认 GBK 代码页下中文乱码
         # （报告文件本身始终为 UTF-8，这里只修控制台/重定向输出层）。
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        _bootstrap_console()
         report_path = run_cli(sys.argv[2:])
         try:
             if sys.stdout:
@@ -319,16 +329,7 @@ if __name__ == "__main__":
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] == "--rac":
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        _bootstrap_console()
         report_path = run_rac(sys.argv[2:])
         try:
             if sys.stdout:
@@ -338,17 +339,8 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] in ("--webauto", "--web"):
         target = sys.argv[2] if len(sys.argv) > 2 else ""
         if not target:
-            raise SystemExit('用法：魔盒-ctf.exe --webauto <URL>')
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+            raise SystemExit('用法：魔盒-CTF.exe --webauto <URL>')
+        _bootstrap_console()
         report_path = run_webauto(target)
         try:
             if sys.stdout:
@@ -356,16 +348,7 @@ if __name__ == "__main__":
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] == "--pwn":
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        _bootstrap_console()
         report_path = run_pwn(sys.argv[2:])
         try:
             if sys.stdout:
@@ -373,16 +356,7 @@ if __name__ == "__main__":
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] in ("--auto", "--v3"):
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        _bootstrap_console()
         try:
             report_path = run_v3_auto(sys.argv[2:])
         except Exception as exc:
@@ -396,17 +370,8 @@ if __name__ == "__main__":
         argv = sys.argv[2:]
         target = next((a for a in argv if not a.startswith("--")), "")
         if not target:
-            raise SystemExit('用法：魔盒-ctf.exe --webattack <URL>')
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+            raise SystemExit('用法：魔盒-CTF.exe --webattack <URL>')
+        _bootstrap_console()
         try:
             report_path = run_webattack(target)
         except Exception as exc:
@@ -417,30 +382,12 @@ if __name__ == "__main__":
         except Exception:
             pass
     elif len(sys.argv) > 1 and sys.argv[1] == "--platform":
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        _bootstrap_console()
         from ctfbox.platforms.cli import main as platform_main
         platform_args = ["--platform"] + [a for a in sys.argv[2:] if a != "--ctf-only"]
         raise SystemExit(platform_main(platform_args))
     elif len(sys.argv) > 1 and sys.argv[1] == "--comp":
-        if sys.platform.startswith("win"):
-            try:
-                os.system("chcp 65001 >nul 2>nul")
-            except Exception:
-                pass
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        _bootstrap_console()
         from ctfbox.competition.cli import main as comp_main
         raise SystemExit(comp_main([a for a in sys.argv[2:] if a != "--ctf-only"]))
     else:
@@ -460,7 +407,7 @@ if __name__ == "__main__":
                     fp.write(traceback.format_exc())
                 from tkinter import Tk, messagebox
                 r = Tk(); r.withdraw()
-                messagebox.showerror("魔盒-ctf 启动失败",
+                messagebox.showerror("魔盒-CTF 启动失败",
                                      "启动出错，详情见 workspace/crash.log\n\n" + traceback.format_exc()[-800:])
             except Exception:
                 raise

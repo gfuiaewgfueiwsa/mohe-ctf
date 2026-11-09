@@ -1,12 +1,16 @@
 # 便携工具与构建产物不进仓库（体积过大，随成品目录分发）
 tools/
 dist/
+dist_*/
 build/
+build_*/
 workspace/
 reports/
 samples/exports/
 __pycache__/
 *.pyc
+# 本机 AI 配置（含模型路径/显存策略，按机器不同，随成品目录分发）
+/ai_config.json
 # Web 回归测试的靶站请求日志（运行时生成）
 tests/deeptarget_requests.log
 # 运行/构建临时产物（本地调试日志与响应快照）
@@ -14,6 +18,7 @@ tests/deeptarget_requests.log
 /*_resp.html
 /sql_*.html
 /build*.log
+/unit*.log
 /tests/_*
 
 /tests/dt*.log

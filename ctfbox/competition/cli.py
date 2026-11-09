@@ -9,6 +9,7 @@ import os
 import sys
 
 from . import util
+from ..versioning import APP_VERSION
 
 
 def _add_common(parser):
@@ -17,8 +18,8 @@ def _add_common(parser):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="魔盒-ctf --comp",
-        description="v3.7.0 赛事专项：内存/流量/移动/代码审计/基线/日志/攻防验证"
+        prog="魔盒-CTF --comp",
+        description=APP_VERSION + " 赛事专项：内存/流量/移动/代码审计/基线/日志/攻防验证"
                     "（离线分析；加固与检测用例只生成不执行）")
     sub = parser.add_subparsers(dest="command")
 

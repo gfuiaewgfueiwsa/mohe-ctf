@@ -213,7 +213,7 @@ class RacPipeline:
 
     # ------------------------------------------------------------------
     def _write_report(self, result: RacResult) -> str:
-        lines = ["魔盒-ctf RAC 自动化流水线报告",
+        lines = ["魔盒-CTF RAC 自动化流水线报告",
                  f"开始: {result.started}   结束: {result.finished}",
                  "=" * 60]
         card = result.task

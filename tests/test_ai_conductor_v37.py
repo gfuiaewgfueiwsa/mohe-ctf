@@ -130,11 +130,26 @@ class AiConductorTest(unittest.TestCase):
             self.assertNotIn("archive_extract", state["targets"][0]["allowed"])
 
     def test_disabled_without_config(self):
-        # 源码目录没有 ai_config.json 时默认关闭，保证测试与 CI 确定性
-        self.assertFalse(os.path.exists(os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ai_config.json")))
-        self.assertFalse(ai_enabled())
-        self.assertFalse(ai_config()["enabled"])
+        """没有配置文件时必须全部默认关闭。
+
+        旧用例断言「源码目录不存在 ai_config.json」，一旦本机为了融合测试放了配置
+        就会误报；这里改成把配置目录指到空临时目录，验证默认值本身。
+        """
+        import tempfile
+        from ctfbox.ai import config as aicfg
+        old = aicfg.APP_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            aicfg.APP_DIR = tmp
+            try:
+                cfg = aicfg.ai_config()
+                self.assertFalse(cfg["enabled"])
+                self.assertFalse(cfg["conductor"])
+                self.assertFalse(cfg["rerank"])
+                self.assertFalse(ai_enabled())
+                self.assertFalse(aicfg.conductor_enabled())
+                self.assertFalse(aicfg.rerank_enabled())
+            finally:
+                aicfg.APP_DIR = old
 
 
 if __name__ == "__main__":

@@ -255,12 +255,21 @@ def script_path(spec: ScriptSpec) -> str:
     return os.path.join(library_root(), *spec.path.split("/"))
 
 
-def select(script_ids) -> List[ScriptSpec]:
+def select(script_ids, by_cost: bool = True) -> List[ScriptSpec]:
+    """按判型清单取脚本，并默认按成本（timeout 作为代价代理）升序稳定排序。
+
+    排序的意义：编排层是「命中强 flag 即止」，先跑的脚本越便宜，越有可能用几百毫秒
+    结束整条链路；此前完全沿用判型列表顺序，曾出现 120s 的 zip_crc_crack / pcap
+    提取排在 20s 的 hash_identify 之前，预算被吃光后便宜脚本根本没机会执行。
+    等代价时保持判型顺序（Python sort 稳定），不影响任何依赖关系。
+    """
     out = []
     for sid in script_ids or []:
         spec = REGISTRY.get(sid)
         if spec and spec not in out:
             out.append(spec)
+    if by_cost:
+        out.sort(key=lambda s: s.timeout)
     return out
 
 

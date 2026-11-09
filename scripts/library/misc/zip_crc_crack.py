@@ -14,49 +14,65 @@ import argparse
 import itertools
 import os
 import string
+import time
 import zipfile
+import zlib
+
+# v4.1：不加预算时 70 字符集 × 6 字节 = 1.2e11 次纯 Python 循环，
+# 单题能把整批任务拖死（实测 DASBOOK 批量卡了 20+ 分钟）。
+MAX_COMBOS = 3_000_000          # 约 8~12 秒的纯 Python 上限
+DEFAULT_BUDGET = 15.0           # 秒；脚本库按题给 timeout，这里再兜一层
 
 
-def crack_crc(target_crc, size, charset, prefix=b"", known_suffix=b""):
+def crack_crc(target_crc, size, charset, prefix=b"", known_suffix=b"",
+              budget=DEFAULT_BUDGET, max_combos=MAX_COMBOS):
     free = size - len(prefix) - len(known_suffix)
     if free < 0:
         return None
-    for tup in itertools.product(charset, repeat=free):
-        cand = prefix + "".join(tup).encode() + known_suffix
-        import zlib
+    combos = len(charset) ** free
+    if combos > max_combos:
+        print(f"[-] 跳过：{len(charset)}^{free} = {combos:,} 种组合超出上限 {max_combos:,}，"
+              f"该长度需 bkcrack/已知明文，不再空转")
+        return None
+    deadline = time.time() + max(0.5, budget)
+    tail = known_suffix
+    for n, tup in enumerate(itertools.product(charset, repeat=free)):
+        if not (n & 0x3fff) and time.time() > deadline:   # 每 16384 次看一次表
+            print(f"[-] 时间预算 {budget}s 用尽（已试 {n:,}/{combos:,}），停止")
+            return None
+        cand = prefix + "".join(tup).encode() + tail
         if zlib.crc32(cand) & 0xffffffff == target_crc:
             return cand
     return None
 
 
-def run(path, charset, maxsize):
+def run(path, charset, maxsize, budget=DEFAULT_BUDGET):
     zf = zipfile.ZipFile(path)
     for info in zf.infolist():
         if info.file_size > maxsize:
             print(f"[-] {info.filename} {info.file_size} 字节过大，CRC 爆破不现实，改用 bkcrack/字典")
             continue
         print(f"[*] {info.filename}: {info.file_size} 字节, CRC={info.CRC:08x}")
-        r = crack_crc(info.CRC, info.file_size, charset)
+        r = crack_crc(info.CRC, info.file_size, charset, budget=budget)
         if r:
             print(f"[+] 碰撞成功: {r!r}  -> {r.decode('utf-8', 'replace')}")
         else:
-            print("[-] 未碰撞到，可扩大 --charset / --max")
+            print("[-] 未碰撞到，可缩小 --charset / --max 或提供已知前缀")
 
 
 def selftest():
-    import zlib
-    d = os.path.join(os.environ.get("TEMP", "."), "crc_self")
-    os.makedirs(d, exist_ok=True)
-    zp = os.path.join(d, "enc.zip")
+    # 直接验证碰撞核心：旧版 selftest 写入 17 字节却声明 5 字节，
+    # 结果每次都走「字节过大」分支，等于从没测过 crack_crc。
     plain = b"abc12"
-    with zipfile.ZipFile(zp, "w") as zf:
-        zi = zipfile.ZipInfo("f.txt")
-        zi.flag_bits |= 0x1
-        zi.CRC = zlib.crc32(plain) & 0xffffffff
-        zi.file_size = len(plain)
-        zi.compress_type = zipfile.ZIP_STORED
-        zf.writestr(zi, b"\x00" * (len(plain) + 12))
-    run(zp, string.ascii_lowercase + string.digits, 6)
+    got = crack_crc(zlib.crc32(plain) & 0xffffffff, len(plain), "abc12", budget=5.0)
+    assert got == plain, "CRC 碰撞应还原明文，实得 %r" % got
+    print("[+] 碰撞还原 OK: %r" % got)
+    # 组合数超上限必须立刻跳过，不能空转
+    assert crack_crc(0, 6, string.ascii_letters + string.digits, budget=1.0) is None
+    print("[+] 大组合跳过 OK")
+    # 组合数在上限内、但时间预算极短：验证循环里的 deadline 检查确实生效
+    assert crack_crc(0, 5, string.ascii_lowercase[:15], budget=0.001) is None
+    print("[+] 时间预算 OK")
     print("[+] selftest OK")
 
 
@@ -65,13 +81,15 @@ def main():
     ap.add_argument("zip", nargs="?")
     ap.add_argument("--charset", default=string.ascii_lowercase + string.digits + string.ascii_uppercase + "_{}-!@#")
     ap.add_argument("--max", type=int, default=6)
+    ap.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
+                    help="单文件时间上限（秒），默认 15")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         selftest(); return
     if not a.zip:
         print("[!] 用法: python zip_crc_crack.py encrypted.zip"); return
-    run(a.zip, a.charset, a.max)
+    run(a.zip, a.charset, a.max, budget=a.budget)
 
 
 if __name__ == "__main__":

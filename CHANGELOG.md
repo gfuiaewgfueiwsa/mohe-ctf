@@ -1,5 +1,42 @@
 # CHANGELOG
 
+## v4.1.0 — 2026-11-09
+
+本版不新增功能，专做**架构收敛与静默缺陷修复**：把长期存在的“不报错但会劣化结果/吃满磁盘/拖死批次”的问题逐项定位并修掉，同时把自动化流水线按成本从低到高重排。完整清单见 `不足与bug记录.md` 第五节。
+
+### 架构
+
+- **命名规范统一**：产品名固定 `魔盒-CTF`（大写 CTF），完整展示名 `魔盒-CTF v4.1.0`；`ctfbox/versioning.py` 新增 `APP_NAME` / `app_title()`，UI 标题、报告页眉、PE 资源（`OriginalFilename=魔盒-CTF.exe`）、exe 与分发目录名全部引用同一常量，禁止再手写小写 `ctf`。
+- **版本号单一来源** `ctfbox/versioning.py`：工程内只有 `ctfbox.__version__` 一处字面量；UI 标题、报告头、`result.json`、PE 版本资源全部派生。此前源码 4.0.0 / `result.json` 3.7.0 / exe 属性 3.7.0.0 三方漂移。
+- **PE 版本资源自动生成**：`CTFToolbox.spec` 打包前调用 `write_version_info()` 写 `version_info.txt`，手写文件时代结束（内容不变则不重写）。
+- **统一运行产物目录** `ctfbox/common.py`：`new_run_dir()` + `prune_runs()` 滚动保留最近 12 次运行，替代 `abs(hash(path))` 随机目录。
+- **`main.py` 控制台初始化去重**：八个 CLI 分支共约 90 行重复代码收敛为 `_bootstrap_console()`。
+
+### 修复（均为不报错的静默缺陷）
+
+- **产物目录无限膨胀**：`dispatcher` / `rac` 用 `abs(hash(path))` 命名，`PYTHONHASHSEED` 每次不同 → 每次新建 `out_*`；改 MD5 稳定短哈希。
+- **RAC 脚本超时留孤儿孙进程**：`subprocess.run(timeout=)` 只杀直接子进程；改走 `process_runner`（Windows Job Object / POSIX killpg）杀整棵进程树，并保留超时前输出。
+- **RAC 中文输出乱码/崩栈**：子进程强制 `PYTHONIOENCODING=utf-8`，文本模式 UTF-8 解码。
+- **平台登录态失效崩栈**：新增 `_json_body()`，非 JSON 响应统一抛 `PlatformError`；`submit` 校验 cid；`wait_ready` 先校验 URL。
+- **多附件题只分析第一个附件**：`platforms/cli.py` 依次尝试最多 3 个附件，命中即停。
+- **AI 开关粒度**：拆 `conductor` / `rerank`，默认均关；古典密码分析不再每题拉起 llama-server。
+- `scriptrun._expand_multitap` 硬编码 `ctfbox.` 包名前缀 → 改相对导入。
+- `wp._narrative` 用 `id(item)` 去重会因 id 复用误删段落 → 改用下标。
+- **古典分析候选刷屏**：`classical.analyze` 把「整段原文」及其变换当候选返回（打包冒烟实测 12 条候选全是同一段多行原文的变体，置信度 0.45 但占据整个候选表）。改为跳过与原文完全一致的变换结果、非 flag 形态线索压成单行并截断 160 字、flag 形态候选优先占位、线索最多 5 条。
+- **正文内嵌编码片段漏解**：`codes.decode_chain` 只把整段文本丢给 `auto_decode`，而真题常见形态是「提示语 + 一串 base64」，整段解不出来就 0 命中（实测 `ZmxhZ3twYWNrYWdlZF9zbW9rZV92NDF9` 明明能解出 flag 却报 0 候选）。新增 token 级解码通路：正则切出 base64/base64url/base32/hex 片段逐个解码，可打印率 ≥92% 才采纳，命中即产出 0.93 置信候选，最后按值去重取最高置信。
+
+### 优化
+
+- **编排阶段按成本阶梯重排**（`autopilot/orchestrator.py`）：识别 → triage → 指纹 → strings → 古典密码 → 归档链 → 图片隐写 → 编码/RSA/ECC/Hash → xor/对称 → **白名单脚本** → 深度模块 → 二进制/Pwn → 脚本产物跟进。此前 120–180 s 的深度子进程排在毫秒级确定性步骤之前，预算被吃光后便宜步骤没机会跑。
+- **命中强 flag 即收敛**：`_has_strong()`（置信度 ≥0.9）+ `_skip_phase()`，跳过深度模块、二进制/Pwn、白名单脚本、古典密码、产物跟进，避免重模块产出弱候选干扰结论。
+- `_run_scripts` 不再越权调用 `_follow_script_artifacts`，产物跟进统一由 `run_file` 在末端判定。
+
+### 验证
+
+- 新增 `tests/test_architecture_v41.py`（22 项）：版本三处一致 + PE 资源、命名规范（大写 CTF）、运行目录稳定与滚动清理、脚本库成本排序、脚本先于深度模块、强 flag 跳过重阶段、RAC UTF-8 与孙进程终止、平台非 JSON 容错、正文内嵌 base64 命中、古典候选不刷屏。
+- 全量单测 **132 项通过**；Web 侧 `tests/test_webattack_v41.py` 场景 A–O（15 个）全部 PASS，无退化。
+- 实测阶段顺序（`web_source` 样本）：`[4] classical → [5] script.encode_decode_hub → [6] deep.text`，修前 deep 在前。
+
 ## v4.0.0 — 2026-11-08
 
 ### 重构
@@ -13,7 +50,7 @@
 ### 新增
 
 - **AI 模型投毒/后门静态检测** `ctfbox/ai_poison.py`：对 `.pkl/.pt/.pth/.ckpt/.safetensors/.onnx/.h5/.pb` 做 pickle GLOBAL op 危险 token 扫描、safetensors JSON 头检查、PyTorch zip 内 pickle 递归扫描；绝不加载/执行模型。GUI 新增「AI 投毒分析」页。
-- **WP 自动落盘到软件根目录**：一键梭哈命中 flag 后，在 `魔盒-ctf.exe` 同级目录自动生成 `WP_<题型>_<时间>.md`，完整专业模板（题目信息/信息收集/解题过程/Flag/修复建议/证据附录）。
+- **WP 自动落盘到软件根目录**：一键梭哈命中 flag 后，在 `魔盒-CTF.exe` 同级目录自动生成 `WP_<题型>_<时间>.md`，完整专业模板（题目信息/信息收集/解题过程/Flag/修复建议/证据附录）。
 - **离线网页新增**：JWT 解码器、进制/Base64 转换器，均为本地 HTML，断网可用。
 
 ### AI 裁判修复（对照 v3.7.0 实测缺陷）

@@ -26,6 +26,21 @@ class PlatformError(RuntimeError):
     pass
 
 
+def _json_body(resp, what):
+    """把平台响应安全解析为 JSON。
+
+    会话过期时 CTFd 会 302 到 /login 并返回 HTML，旧实现直接 resp.json()
+    抛 requests.JSONDecodeError（不在 PlatformError 捕获范围内），CLI 直接崩栈。
+    """
+    try:
+        return resp.json()
+    except Exception:
+        snippet = re.sub(r"\s+", " ", (getattr(resp, "text", "") or ""))[:160]
+        hint = "登录态可能已失效（被重定向到登录页）" if resp.status_code in (301, 302, 200) else ""
+        raise PlatformError("%s：返回非 JSON（HTTP %s）%s %s"
+                            % (what, getattr(resp, "status_code", "?"), hint, snippet))
+
+
 def _slug(base):
     host = urlparse(base).netloc or base
     return re.sub(r"[^A-Za-z0-9_.-]", "_", host)
@@ -163,7 +178,7 @@ class CTFdPlatform:
     def list_challenges(self, category="", unsolved_only=True, include_hidden=False):
         r = self.session.get(urljoin(self.base, "/api/v1/challenges"),
                              params={"money": 0}, timeout=self.timeout)
-        body = r.json()
+        body = _json_body(r, "题目列表获取失败")
         if r.status_code != 200 or not body.get("success"):
             raise PlatformError("题目列表获取失败：HTTP %s" % r.status_code)
         out = []
@@ -181,7 +196,7 @@ class CTFdPlatform:
     def challenge(self, cid):
         r = self.session.get(urljoin(self.base, "/api/v1/challenges/%s" % cid),
                              timeout=self.timeout)
-        body = r.json()
+        body = _json_body(r, "题目 %s 详情获取失败" % cid)
         if r.status_code != 200 or not body.get("success"):
             raise PlatformError("题目 %s 详情获取失败：HTTP %s" % (cid, r.status_code))
         return body.get("data") or {}
@@ -212,6 +227,8 @@ class CTFdPlatform:
     # ---- ctfd-whale 动态实例 -------------------------------------------
     def wait_ready(self, url, timeout=120, poll=3):
         """whale 返回 user_access 时容器常仍在启动；等到 HTTP 真正可用再开打。"""
+        if not url or not str(url).startswith(("http://", "https://")):
+            return {"ready": False, "status": 0, "probe": "实例 URL 无效: %r" % (url,)}
         deadline = time.time() + max(0, timeout)
         last = ""
         while time.time() < deadline:
@@ -285,15 +302,18 @@ class CTFdPlatform:
                    "X-Requested-With": "XMLHttpRequest"}
         if tok:
             headers["CSRF-Token"] = tok
+        try:
+            cid_value = int(cid)
+        except (TypeError, ValueError):
+            raise PlatformError("题目 ID 必须是数字：%r" % (cid,))
         r = self.session.post(urljoin(self.base, "/api/v1/challenges/attempt"),
-                              json={"challenge_id": int(cid),
+                              json={"challenge_id": cid_value,
                                     "submission": str(flag).strip()},
                               timeout=self.timeout, headers=headers)
-        try:
-            body = r.json()
-        except Exception:
-            raise PlatformError("提交响应非 JSON：HTTP %s" % r.status_code)
-        data = body.get("data") or {}
+        body = _json_body(r, "提交 flag 失败")
+        data = body.get("data")
+        if not isinstance(data, dict):
+            data = {}
         return {"status": data.get("status") or ("ok" if body.get("success") else "error"),
                 "message": data.get("message") or "",
                 "raw": body}

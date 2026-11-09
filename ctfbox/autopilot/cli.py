@@ -76,7 +76,7 @@ def _print_result(result: dict):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="魔盒-ctf %s 一键梭哈" % VERSION)
+    parser = argparse.ArgumentParser(description="魔盒-CTF %s 一键梭哈" % VERSION)
     parser.add_argument("--auto", "--v3", dest="target", required=True,
                         help="文件路径或 URL")
     parser.add_argument("--ctf-only", action="store_true",

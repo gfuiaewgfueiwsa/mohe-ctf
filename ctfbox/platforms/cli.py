@@ -155,49 +155,61 @@ def cmd_solve(args):
         print("[*] 该题已解，退出（--force 可重跑）")
         return 0
 
+    targets = []
     if detail.get("type") != "dynamic_docker" and not args.url:
         files = cli.download_files(detail, os.path.join(WORKSPACE, "platform",
                                                         "files", str(cid)))
-        print("[*] 非动态实例题；附件 %d 个。文件方向请直接用 --auto 分析附件。" % len(files))
+        print("[*] 非动态实例题；附件 %d 个" % len(files))
         if not files:
             print("[!] 该题没有附件，无法自动梭哈；请人工确认题型。")
             return 2
-        target = files[0]
+        # 多附件题（如「源码 + 密文」「两个镜像」）旧实现只分析第一个，
+        # 若答案在第二个附件就永远解不出。这里逐个尝试，命中即停。
+        targets = files[:3]
         if len(files) > 1:
-            print("[*] 多附件，先用第一个：", target)
+            print("[*] 多附件：逐个尝试（最多 3 个，命中即停）")
     else:
         url = args.url
         if not url:
             info = cli.boot(cid)
             url = info.get("user_access")
             print("[+] 实例：%s（剩余 %s 秒）" % (url, info.get("remaining_time")))
-        target = url
         ready = cli.wait_ready(url, timeout=args.boot_wait)
         if not ready["ready"]:
             raise PlatformError("实例 URL 可达但服务未就绪（%s）：%s"
                                 % (ready["probe"], url))
         print("[+] 服务已就绪：%s" % ready["probe"])
-        cli.log("[*] 启动一键梭哈：%s" % url)
+        targets = [url]
 
     hosts = list(args.allow_host or [])
     pbase = re.sub(r"^https?://", "", cli.base).split("/")[0]
     hosts.append(pbase)
     if "polarctf.com" in pbase:
         hosts.append("*.polarctf.com")
-    is_web = target.startswith("http")
     desc = re.sub(r"<[^>]+>", " ", detail.get("description") or "")
     hints = [detail.get("name") or "", detail.get("category") or "",
              re.sub(r"\s+", " ", desc).strip()]
-    result = run_auto(target, True, allow_private=args.allow_private, allow_hosts=hosts,
-                      deep=args.deep, render=args.render, log=lambda m: print(m, flush=True),
-                      headless=not args.headful, exploit=is_web,
-                      consent_feature=args.consent, i_own=args.i_own,
-                      hints=hints,
-                      meta={"name": detail.get("name") or "",
-                            "category": detail.get("category") or "",
-                            "id": cid,
-                            "description": re.sub(r"\s+", " ", desc).strip(),
-                            "platform": pbase})
+    result = {}
+    target = targets[0]
+    for idx, target in enumerate(targets, 1):
+        is_web = str(target).startswith("http")
+        if len(targets) > 1:
+            print("[*] 附件 %d/%d：%s" % (idx, len(targets), target))
+        cli.log("[*] 启动一键梭哈：%s" % target)
+        result = run_auto(target, True, allow_private=args.allow_private, allow_hosts=hosts,
+                          deep=args.deep, render=args.render, log=lambda m: print(m, flush=True),
+                          headless=not args.headful, exploit=is_web,
+                          consent_feature=args.consent, i_own=args.i_own,
+                          hints=hints,
+                          meta={"name": detail.get("name") or "",
+                                "category": detail.get("category") or "",
+                                "id": cid,
+                                "description": re.sub(r"\s+", " ", desc).strip(),
+                                "platform": pbase})
+        if _candidate_flags(result):
+            break
+        if idx < len(targets):
+            print("[*] 本附件未得强候选，继续下一个")
     if result.get("wp"):
         print("[*] WP：%s（格式 %s）" % (result.get("wp"),
                                         result.get("wp_format", "-")))

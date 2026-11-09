@@ -5,6 +5,15 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 SPECPATH = os.path.abspath(os.getcwd())
 
+# === PE 版本资源由 ctfbox.__version__ 生成，杜绝 exe 属性与源码版本漂移 ===
+# 以前 version_info.txt 是手写文件，长期停在 3.7.0.0，而界面/报告已是 4.x。
+try:
+    from ctfbox.versioning import write_version_info
+    _VI = write_version_info(os.path.join(SPECPATH, "version_info.txt"))
+    print("version_info:", _VI)
+except Exception as e:  # 兜底：实在生成不了就用仓库存量文件，不让打包中断
+    print("version_info regenerate skip", e)
+
 datas = []
 binaries = []
 hiddenimports = []
