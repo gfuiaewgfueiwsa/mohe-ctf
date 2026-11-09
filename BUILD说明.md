@@ -13,11 +13,10 @@
 | `ctfbox\rac\` | RAC 自动化：题目流水线、侦察、SSH 批量执行、Oracle 巡检、RPA 会话 |
 | `main.py` | 入口，负责 GUI / `--cli` / `--auto` / `--rac` / `--webauto` / `--webattack` / `--pwn` / `--platform` / `--comp` 分派 |
 | `CTFToolbox.spec` | PyInstaller 打包配置（输出名 `CTFToolbox.exe`） |
-| `build.bat` | 一键打包脚本，产物落到 `dist\CTFToolbox\` |
-| `version_info.txt` | PE 版本资源（4.1.0.0，中英双 StringTable） |
+| `build.bat` | 一键打包脚本：版本号取自 `ctfbox.__version__`，产物落到 `dist\CTFToolbox\` 并命名 `魔盒-CTFv<版本>.exe` |
 | `_mirror_webtools.py` | 内置 Web 工具导航数据生成 |
-| `scripts\library\` | 88 个脚本与速查表（69 个 Python 脚本），既是功能素材也是 RAC 装配源 |
-| `tests\` | 单测与本地靶站；全量 110 项 |
+| `scripts\library\` | 89 个文件（69 个 Python 脚本 + 速查表/说明），既是功能素材也是 RAC 装配源 |
+| `tests\` | 单测与本地靶站；全量 132 项 |
 | `docs\` | 当前架构与交付验证记录 |
 | `samples\` | 示例输入占位，打包时随包进 `_internal` 再挪到 exe 同级 |
 | `tools\` | **目录联接（Junction）**，指向 `..\魔盒-CTF\tools`，不是 3 GB 副本 |
@@ -32,7 +31,7 @@
    mklink /J "tools" "..\魔盒-CTF\tools"
    ```
    `tools\` 约 3.1 GB，包含 Ghidra、jadx、ffmpeg、JDK、Node、独立 Python、7z、nmap、sqlmap、hashcat、john、radare2、x64dbg、dnSpy 等 25 个便携工具。
-3. **没有 exe 在运行**：`build.bat` 会先 `taskkill /F /IM CTFToolbox.exe`，但 `workspace\crash.log` 句柄仍可能占用 `dist`；打包前手动确认更稳。
+3. **没有 exe 在运行**：`build.bat` 会先结束 `CTFToolbox.exe` / `魔盒-CTF*.exe`，但 `workspace\crash.log` 句柄仍可能占用 `dist`；打包前手动确认更稳。
 
 ## 打包命令
 
@@ -47,7 +46,7 @@ build.bat
 3. 复制 `使用说明.md` 与 `卸载魔盒-CTF.bat`；
 4. 建立空的 `workspace`、`reports`、`exports` 目录。
 
-分发时把 `dist\CTFToolbox\` 整体复制为 `魔盒-CTF\`，可执行文件为 `CTFToolbox.exe`；成品按版本命名为 `魔盒-CTFv4.1.0.exe`，并建立 `魔盒-CTF.exe` 硬链接（同一文件，零额外空间），兼容文档示例与旧快捷方式。
+分发时把 `dist\CTFToolbox\` 整体复制为 `魔盒-CTF\`。`build.bat` 已自动把 `CTFToolbox.exe` 重命名为 `魔盒-CTFv<版本>.exe`，并建立 `魔盒-CTF.exe` 硬链接（同一文件，零额外空间），兼容文档示例与旧快捷方式；手工部署时按同样规则处理。
 
 本地模型裁判的模型与运行时**不由 PyInstaller 打包**，直接放在成品根目录：
 

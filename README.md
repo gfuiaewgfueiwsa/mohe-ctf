@@ -18,7 +18,7 @@
 - **RAC 自动化（`ctfbox/rac/`）**：五合一自动化中心——题目流水线（Recognize → Assemble → Command，参数识别 + 脚本库评分装配 + 静默执行 + 强模式提取 flag）、侦察自动化（端口/HTTP/目录）、SSH 批量远程执行、Oracle RAC 只读巡检、JSON 步骤表驱动的 RPA 会话。
 - **分类分析模块（`ctfbox/modules_*.py`）**：杂项编码、密码学、取证、隐写、图片/音频/视频、流量包、WebShell 流量、逆向、Python 反编译、归档、DNS、日志、文档、蓝牙、车辆与题目专项（Polar）、动态靶机利用等；一键分析自动匹配并串行执行，递归下钻嵌套容器。
 - **媒体中心**：语谱图、LSB 多位面提取、视频抽帧、GIF 导出、音频隐写链、内置播放器与图片增强。
-- **脚本库（`scripts/library/`）**：88 个脚本与速查表文件（含 69 个单文件 Python 脚本），按 7 个方向分类，支持 `--selftest`，既是「📚 脚本库」页的功能素材，也是 RAC 与一键梭哈的自动装配来源。
+- **脚本库（`scripts/library/`）**：89 个文件（69 个单文件 Python 脚本 + 速查表/说明），按 7 个方向分类，支持 `--selftest`，既是「📚 脚本库」页的功能素材，也是 RAC 与一键梭哈的自动装配来源。
 - **工具中心**：统一管理和静默调用随包 25 个便携工具（7z、Ghidra、jadx、nmap、sqlmap、hashcat、john、radare2、x64dbg、dnSpy、ffmpeg、ExifTool、MobaXterm 等），避免弹窗刷屏；支持官方下载、winget/pip 通道与 WSL2 Kali 工具集。
 
 完整用法见 [使用说明.md](使用说明.md)，已知缺口与边界见 [不足与bug记录.md](不足与bug记录.md)，架构与验证记录见 [docs/架构.md](docs/架构.md) 与 [docs/交付与验证.md](docs/交付与验证.md)。
@@ -49,10 +49,10 @@ CLI 首次使用需加 `--accept-responsibility`；确认结果持久化后不�
 ```
 main.py                 启动入口（GUI / CLI 各模式统一先过责任说明闸门）
 CTFToolbox.spec         PyInstaller 打包配置（输出名 CTFToolbox.exe）
-build.bat               一键打包脚本
-version_info.txt        Windows PE 版本资源（4.1.0.0）
+build.bat               一键打包脚本（版本号取自 ctfbox.__version__，产出 魔盒-CTFv<版本>.exe）
 _mirror_webtools.py     内置 Web 工具导航数据生成
 ctfbox/                 核心包：dispatcher、identifier、各 modules_*、ui_*、toolsmgr、web*
+ctfbox/versioning.py    版本号单一来源 + PE 版本资源生成（version_info.txt 打包时生成，不入库）
 ctfbox/autopilot/       一键梭哈编排：triage、workspace、scope、sandbox、audit、exploit/、tools/、orchestrator、wp
 ctfbox/ai/              本地模型裁判：config（配置/探测）、backend（llama-server）、conductor（白名单调度）
 models/                 本地模型目录（GGUF 不随源码仓库分发，成品目录内置）
@@ -60,13 +60,13 @@ runtime/llama/          llama.cpp 运行时（cuda/cpu 两套 llama-server）
 ctfbox/competition/     赛事专项：memory/traffic/mobile/codeaudit/baseline/logtime/defense/util/cli
 ctfbox/platforms/       平台闭环：CTFd/PolarCTF 登录、题目、实例与提交
 ctfbox/rac/             RAC 自动化：识别、装配、执行、侦察、远程执行、Oracle 巡检、RPA
-scripts/library/        分类脚本库（88 个脚本与速查表 / 69 个 Python 脚本）
-tests/                  单测与本地靶站（含利用链、赛事专项、平台、责任闸门回归）
-docs/                   当前架构与交付验证记录
+scripts/library/        分类脚本库（89 个文件：69 个 Python 脚本 + 速查表/说明）
+tests/                  单测与本地靶站（132 项，含利用链、赛事专项、平台、责任闸门回归）
+docs/                   当前架构（架构.md）与 v4.1.0 交付验证（交付与验证.md）
 samples/                示例输入占位
 ```
 
-`tools/`（约 3.1 GB 便携工具链）与 `dist/`、`build/`、`workspace/`、`reports/` 为本地运行/构建产物，不入库。
+`tools/`（约 3.4 GB 便携工具链）与 `dist/`、`build/`、`workspace/`、`reports/` 为本地运行/构建产物，不入库；`version_info.txt` 由打包脚本自动生成，同样不入库。
 
 ## 依赖
 
@@ -78,7 +78,7 @@ GUI 基于 `customtkinter`。打包依赖见 `CTFToolbox.spec`：
 
 1. 安装上述依赖与 `pyinstaller`（`build.bat` 默认使用 `D:\PY\python.exe`，按需修改解释器路径）。
 2. 准备 `tools/portable` 与 `tools/runtime`（Ghidra、jadx、ffmpeg、JDK、Node、独立 Python 等）。
-3. 执行 `build.bat`，产物在 `dist/CTFToolbox/CTFToolbox.exe`；脚本会把 `tools`、`samples`、`scripts`、`使用说明.md`、`卸载魔盒-CTF.bat` 整理到 exe 同级。分发时复制/重命名为 `魔盒-CTF.exe`。
+3. 执行 `build.bat`，产物在 `dist/CTFToolbox/`；脚本会把 `tools`、`samples`、`scripts`、`使用说明.md`、`卸载魔盒-CTF.bat` 整理到 exe 同级，并把 `CTFToolbox.exe` 重命名为 `魔盒-CTFv<版本>.exe`、建立 `魔盒-CTF.exe` 硬链接。
 
 ## 未随仓库发布的内容
 

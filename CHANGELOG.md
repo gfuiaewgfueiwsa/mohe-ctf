@@ -11,6 +11,7 @@
 - **PE 版本资源自动生成**：`CTFToolbox.spec` 打包前调用 `write_version_info()` 写 `version_info.txt`，手写文件时代结束（内容不变则不重写）。
 - **统一运行产物目录** `ctfbox/common.py`：`new_run_dir()` + `prune_runs()` 滚动保留最近 12 次运行，替代 `abs(hash(path))` 随机目录。
 - **`main.py` 控制台初始化去重**：八个 CLI 分支共约 90 行重复代码收敛为 `_bootstrap_console()`。
+- **仓库结构整理**：删除 v3.7.0 旧截图与过期交付记录（`docs/交付与验证.md` 重写为 v4.1.0）；`version_info.txt` 改为打包时生成、不再入库；`build.bat` 重写为读取 `ctfbox.__version__` 并自动命名成品；README / BUILD / 使用说明的目录树、脚本数与测试计数同步。
 
 ### 修复（均为不报错的静默缺陷）
 
