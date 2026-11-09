@@ -80,7 +80,7 @@ v4.1.0 全量回归 **132 tests OK**，另有 Web 全链路 15 个场景（A–O
 
 ## 已发布状态
 
-- 成品 `魔盒-CTF.exe` / `CTFToolbox.exe`：PE 版本 **4.1.0.0**，2026-11-09 构建，25,152,080 字节（PE 版本资源由 spec 打包时按 `ctfbox.__version__` 生成，不再手写）。
+- 成品 `魔盒-CTFv4.1.0.exe`（`魔盒-CTF.exe` 为同文件硬链接）：PE 版本 **4.1.0.0**，2026-11-09 构建，25,152,456 字节（PE 版本资源由 spec 打包时按 `ctfbox.__version__` 生成，不再手写）。
 - 全量单测 132 项通过；CLI 责任闸门、平台列表、打包产物冒烟均已实测（`--cli`、`--auto` 各跑一遍，`result.json` 版本号 4.1.0）。
 - 源码、测试与文档同步到 GitHub `gfuiaewgfueiwsa/mohe-ctf`（`tools/`、`dist/`、`workspace/` 不入库）。
 
