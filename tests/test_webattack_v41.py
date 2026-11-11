@@ -17,7 +17,7 @@ from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlsplit, parse_qs
 
-SRC = r"D:\工具合集软件\_源码_v2.4"
+SRC = r"D:\工具合集软件\魔盒-CTF-v4.1.0-源码"
 sys.path.insert(0, SRC)
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 

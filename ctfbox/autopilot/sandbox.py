@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from ..common import CREATE_NO_WINDOW
+from ..versioning import version_tag
 
 
 class SandboxUnavailable(RuntimeError):
@@ -59,7 +60,7 @@ def policy_text(caps: dict = None) -> str:
         return "检测到隔离后端：%s。执行未知样本前仍需人工确认镜像/沙箱配置。" % \
                ", ".join(caps.get("backends") or [])
     return ("本机无可用隔离后端（Docker/WSL/Windows Sandbox 均未就绪），"
-            "v3.7.0 对未知二进制只做静态分析，不执行样本。")
+            "%s 对未知二进制只做静态分析，不执行样本。" % version_tag())
 
 
 def require_isolation() -> dict:

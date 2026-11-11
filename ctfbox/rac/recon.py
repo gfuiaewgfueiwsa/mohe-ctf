@@ -14,6 +14,8 @@ import ipaddress
 import concurrent.futures as cf
 from typing import Callable, Dict, List
 
+from ..versioning import APP_VERSION
+
 try:
     import requests
     _HAVE_REQUESTS = True
@@ -138,7 +140,7 @@ def dir_scan(base: str, timeout: float = 6.0, words: List[str] = None,
     base = base.rstrip("/")
     hits = []
     session = requests.Session()
-    session.headers.update({"User-Agent": "mohe-ctf-RAC/2.5"})
+    session.headers.update({"User-Agent": "MoHe-CTF-RAC/%s" % APP_VERSION})
 
     def probe(w):
         url = base + w

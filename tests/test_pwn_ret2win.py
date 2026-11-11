@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """本地 TCP 闭环测试：验证 ret2win 发送与 flag 抓取。"""
 import socket, threading, sys, os, time
-sys.path.insert(0, r"D:\工具合集软件\_源码_v2.4")
+sys.path.insert(0, r"D:\工具合集软件\魔盒-CTF-v4.1.0-源码")
 from ctfbox import pwnrun
 from ctfbox.common import Report
 

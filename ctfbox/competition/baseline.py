@@ -10,7 +10,7 @@ import re
 import stat
 
 from . import util
-from ..versioning import APP_VERSION
+from ..versioning import APP_NAME, version_tag
 
 AUDIT_GUIDS = {
     "Logon": "0CCE9215-69AE-11D9-BED3-505054503030",
@@ -690,7 +690,7 @@ def _linux_checks(root, result):
 # ----------------------------------------------------------------------------
 # 脚本生成
 # ----------------------------------------------------------------------------
-WIN_HARDEN = r'''# MoHe CTF v3.7.0 - Windows hardening script (GENERATED, NOT EXECUTED)
+WIN_HARDEN = r'''# 魔盒-CTF {VERSION_TAG} - Windows hardening script (GENERATED, NOT EXECUTED)
 # Review every action before running. Run in an elevated PowerShell on the target host.
 # The script captures current state to hardening_state.json for rollback.ps1.
 $ErrorActionPreference = "Stop"
@@ -744,7 +744,7 @@ try {
 Write-Host "Hardening actions completed. Reboot may be required for UAC."
 '''
 
-WIN_ROLLBACK = r'''# MoHe CTF v3.7.0 - Windows rollback script (GENERATED, NOT EXECUTED)
+WIN_ROLLBACK = r'''# 魔盒-CTF {VERSION_TAG} - Windows rollback script (GENERATED, NOT EXECUTED)
 # Restores values captured by harden.ps1 in hardening_state.json.
 $ErrorActionPreference = "Continue"
 $stateFile = Join-Path $PSScriptRoot "hardening_state.json"
@@ -774,7 +774,7 @@ Write-Host "Rollback completed. Reboot may be required for UAC."
 '''
 
 LINUX_HARDEN = r'''#!/usr/bin/env bash
-# MoHe CTF v3.7.0 - Linux hardening script (GENERATED, NOT EXECUTED)
+# 魔盒-CTF {VERSION_TAG} - Linux hardening script (GENERATED, NOT EXECUTED)
 # Review before running as root on the target host. Creates a backup directory.
 set -euo pipefail
 BACKUP_DIR="/var/backups/mohe-hardening-$(date +%Y%m%d%H%M%S)"
@@ -840,7 +840,7 @@ echo "Hardening completed. Review services and firewall separately."
 '''
 
 LINUX_ROLLBACK = r'''#!/usr/bin/env bash
-# MoHe CTF v3.7.0 - Linux rollback script (GENERATED, NOT EXECUTED)
+# 魔盒-CTF {VERSION_TAG} - Linux rollback script (GENERATED, NOT EXECUTED)
 # Usage: sudo ./rollback_linux.sh [backup_dir]
 set -euo pipefail
 BACKUP_DIR="${1:-$(ls -dt /var/backups/mohe-hardening-* 2>/dev/null | head -1)}"
@@ -890,14 +890,14 @@ def _write_scripts(outdir, result):
             ("rollback_windows.ps1", WIN_ROLLBACK, _validate_ps1),
             ("harden_linux.sh", LINUX_HARDEN, _validate_sh),
             ("rollback_linux.sh", LINUX_ROLLBACK, _validate_sh)):
-        content = content.replace("v3.7.0", APP_VERSION)
+        content = content.replace("{VERSION_TAG}", version_tag())
         path = util.save_text(outdir, name, content)
         util.add_artifact(result, path)
         chk = validator(path)
         result["data"].setdefault("script_checks", {})[name] = chk
         scripts[name] = path
     readme = (
-        "MoHe CTF " + APP_VERSION + " baseline scripts (GENERATED ONLY)\n"
+        APP_NAME + " " + version_tag() + " baseline scripts (GENERATED ONLY)\n"
         "================================================\n"
         "These scripts were NOT executed by the analyzer.\n"
         "Review every command before use; run as Administrator/root on the target host.\n"

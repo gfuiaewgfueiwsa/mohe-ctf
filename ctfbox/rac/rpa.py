@@ -31,6 +31,7 @@ except Exception:
     _HAVE_REQUESTS = False
 
 from ..common import scan_flags_text
+from ..versioning import APP_VERSION
 
 RE_INPUT_TOKEN = re.compile(
     r"<input[^>]+name=[\"']?(csrf[_\w]*|token|_token|authenticity_token)[\"']?[^>]+value=[\"']([^\"']+)[\"']", re.I)
@@ -87,7 +88,7 @@ def run_steps(base_url: str, steps: List[Dict], vars: Dict = None,
     vars = dict(vars or {})
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "mohe-ctf-RAC/2.5",
+        "User-Agent": "MoHe-CTF-RAC/%s" % APP_VERSION,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     })
     base = (base_url or "").rstrip("/")

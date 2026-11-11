@@ -29,10 +29,12 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from .common import REPORTS_DIR, scan_flags_text, looks_like_code_flag
+from .versioning import APP_VERSION
 
 MAX_BODY = 256 * 1024
 MIN_INTERVAL = 0.5
-UA = "mohe-ctf/2.5 (authorized CTF use only)"
+# HTTP Header 仅允许 latin-1 编码，产品名使用 ASCII 转写。
+UA = "MoHe-CTF/%s (authorized CTF use only)" % APP_VERSION
 BLOCK_STATUS = (401, 403, 406, 429, 503)
 
 
@@ -557,7 +559,7 @@ def _git_dump_source(base, log):
     import requests
     root = base.rstrip("/")
     s = requests.Session()
-    s.headers.update({"User-Agent": "CTFToolbox-WebAuto"})
+    s.headers.update({"User-Agent": "MoHe-CTF-WebAuto/%s" % APP_VERSION})
 
     def _get(path, timeout=12):
         try:

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-SRC = r"D:\工具合集软件\_源码_v2.4"
+SRC = r"D:\工具合集软件\魔盒-CTF-v4.1.0-源码"
 sys.path.insert(0, SRC)
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 

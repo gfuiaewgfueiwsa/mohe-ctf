@@ -12,6 +12,7 @@
 - **统一运行产物目录** `ctfbox/common.py`：`new_run_dir()` + `prune_runs()` 滚动保留最近 12 次运行，替代 `abs(hash(path))` 随机目录。
 - **`main.py` 控制台初始化去重**：八个 CLI 分支共约 90 行重复代码收敛为 `_bootstrap_console()`。
 - **仓库结构整理**：删除 v3.7.0 旧截图与过期交付记录（`docs/交付与验证.md` 重写为 v4.1.0）；`version_info.txt` 改为打包时生成、不再入库；`build.bat` 重写为读取 `ctfbox.__version__` 并自动命名成品；README / BUILD / 使用说明的目录树、脚本数与测试计数同步。
+- **全工程命名与版本统一**：赛事专项 `VERSION` / `result.json`、加固与回滚脚本模板、加固前后对比模板、Web 与 RAC 的 User-Agent、沙箱策略说明等运行时残留字面量全部改为派生自 `ctfbox.__version__`（UA 因 HTTP Header 只接受 latin-1，产品名使用 ASCII 转写 `MoHe-CTF`）；产品名统一 `魔盒-CTF`；源码目录、分发包、主程序硬链接、脚本库说明与《使用说明》同步到 `魔盒-CTF v4.1.0`。历史版本条目与「vX.Y.Z 起/引入」类注释按惯例保留，仅统一当前值。
 
 ### 修复（均为不报错的静默缺陷）
 

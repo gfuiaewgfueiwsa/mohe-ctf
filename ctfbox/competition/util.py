@@ -10,6 +10,7 @@ import time
 
 from ..common import (APP_DIR, IS_FROZEN, WORKSPACE, external_python,
                       human_size, safe_name, scan_flags)
+from ..versioning import APP_VERSION
 
 COMP_ROOT = os.path.join(WORKSPACE, "competition")
 
@@ -50,7 +51,7 @@ def save_bytes(outdir: str, name: str, data: bytes) -> str:
 def make_result(kind: str, outdir: str, ok: bool = True, summary: str = "",
                 findings=None, artifacts=None, notes=None, data=None) -> dict:
     return {
-        "version": "3.7.0",
+        "version": APP_VERSION,
         "kind": kind,
         "ok": bool(ok),
         "summary": summary,
